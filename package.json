@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite --port 5173",
     "build": "tsc && vite build",
+    "build:getrodion": "tsc && vite build --mode getrodion",
     "build:cap": "tsc && vite build --mode capacitor",
     "preview": "vite preview --port 4173",
     "cap:sync": "npm run build:cap && cap sync",
