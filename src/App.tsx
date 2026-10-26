@@ -498,7 +498,7 @@ export const App: React.FC = () => {
             <div className="flex items-center justify-between pb-3 border-b border-[#E5DEC9]">
               <div className="flex items-center gap-2.5">
                 <img
-                  src="/assets/edo-bronze-icon.jpg"
+                  src={`${import.meta.env.BASE_URL}assets/edo-bronze-icon.jpg`}
                   alt=""
                   className="w-8 h-8 rounded-full object-cover"
                 />

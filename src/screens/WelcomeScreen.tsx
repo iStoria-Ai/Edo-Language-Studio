@@ -11,7 +11,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onGetStarted }) =>
       {/* Top Hero Image with Edo Bronze Head & Benin Palace Courtyard */}
       <div className="relative w-full flex-[1.18] min-h-[265px] max-h-[470px] shrink-0 overflow-hidden bg-[#EFE8D8]">
         <img
-          src="/assets/edo-welcome-hero.jpg"
+          src={`${import.meta.env.BASE_URL}assets/edo-welcome-hero.jpg`}
           alt="Edo Bronze Head Cultural Sculpture"
           className="w-full h-full object-cover object-top"
         />
@@ -58,7 +58,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({ onGetStarted }) =>
           <div className="flex items-center justify-center gap-2.5 text-[#465249] text-[14px] font-semibold">
             <div className="w-6 h-6 rounded-full overflow-hidden border border-[#D5CCB8] bg-[#F3EDE0] flex items-center justify-center shrink-0">
               <img
-                src="/assets/edo-bronze-icon.jpg"
+                src={`${import.meta.env.BASE_URL}assets/edo-bronze-icon.jpg`}
                 alt=""
                 className="w-full h-full object-cover scale-110"
               />

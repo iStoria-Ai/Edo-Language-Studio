@@ -69,7 +69,7 @@ export const StudioHeader: React.FC<StudioHeaderProps> = ({
         >
           <div className="w-[42px] h-[42px] rounded-full overflow-hidden bg-[#F3EDE0] border border-[#DFD5C0] flex items-center justify-center shrink-0 shadow-sm">
             <img
-              src="/assets/edo-bronze-icon.jpg"
+              src={`${import.meta.env.BASE_URL}assets/edo-bronze-icon.jpg`}
               alt="Edo Bronze Head Logo"
               className="w-full h-full object-cover scale-110"
             />

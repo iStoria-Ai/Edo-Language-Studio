@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "vite --port 5173",
     "build": "tsc && vite build",
-    "preview": "vite preview",
-    "cap:sync": "cap sync",
+    "build:cap": "tsc && vite build --mode capacitor",
+    "preview": "vite preview --port 4173",
+    "cap:sync": "npm run build:cap && cap sync",
     "cap:android": "cap open android",
     "cap:ios": "cap open ios"
   },

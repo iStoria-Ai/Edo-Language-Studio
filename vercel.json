@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/ai-studio/edo",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/ai-studio/edo/",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/ai-studio/edo/:path*",
+      "destination": "/:path*"
+    }
+  ]
+}
