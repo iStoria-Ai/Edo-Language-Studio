@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  background-color: #FAF7F0;
+  color: #1C241E;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Oxygen, Ubuntu, Cantarell, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+#root {
+  width: 100%;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Unified Mobile Layout System Classes */
+@layer components {
+  .edo-screen {
+    @apply w-full flex-1 flex flex-col bg-[#FAF7F0] text-[#1C241E] overflow-x-hidden select-none;
+  }
+
+  .edo-screen-scroll {
+    @apply w-full flex-1 flex flex-col justify-between px-5 pb-5 overflow-y-auto overflow-x-hidden;
+  }
+
+  .edo-primary-btn {
+    @apply w-full min-h-[56px] py-3.5 px-6 rounded-2xl font-bold text-[17.5px] leading-snug flex items-center justify-center gap-2.5 shadow-md active:scale-[0.99] transition-all;
+  }
+
+  .edo-secondary-btn {
+    @apply w-full min-h-[52px] py-3 px-5 rounded-2xl bg-white hover:bg-[#F5F1E6] border border-[#DDD5C4] text-[#263129] font-bold text-[16px] leading-snug flex items-center justify-center gap-2 shadow-sm active:scale-[0.99] transition-all;
+  }
+
+  .edo-input {
+    @apply w-full min-h-[54px] px-4 py-3.5 rounded-2xl bg-white border border-[#D4CCB8] text-[16.5px] text-[#1C241E] placeholder-[#858E87] focus:outline-none shadow-inner transition;
+  }
+}
+
+/* Custom subtle scrollbars */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(28, 36, 30, 0.16);
+  border-radius: 9999px;
+}
