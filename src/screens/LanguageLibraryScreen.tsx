@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Search,
   Volume2,
@@ -9,13 +9,22 @@ import {
   FileEdit,
   Info
 } from 'lucide-react';
+import { lessonProgress } from '../services/storageService';
+import { LibraryBackupTools } from '../components/LibraryBackupTools';
+import { RecordingInformation } from '../components/RecordingInformation';
+import { ProtectedRecording } from '../services/libraryProtection';
 import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
-import { playAudioRecording, stopActivePlayback } from '../services/audioService';
+import { playAudioRecording, stopActivePlayback, speakEnglishPrompt, stopEnglishPrompt } from '../services/audioService';
 
 interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
+  recordings: ProtectedRecording[];
+  queueCount: number;
+  onLibraryChanged: () => Promise<void>;
+  onEditText: (id: string, text: string) => Promise<void>;
+  onDeleteLesson: (id: string) => Promise<void>;
   onBackToDashboard: () => void;
   onJumpToHelpOthers: () => void;
 }
@@ -24,13 +33,29 @@ type LibraryFilter = 'all' | 'words' | 'phrases' | 'missing';
 
 export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   entries,
+  recordings,
+  queueCount,
+  onLibraryChanged,
+  onEditText,
+  onDeleteLesson,
   onBackToDashboard,
   onJumpToHelpOthers
 }) => {
+  const [editText, setEditText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => () => stopActivePlayback(), []);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<LibraryFilter>('all');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<EdoEntry | null>(null);
+
+  useEffect(() => {
+    return () => {
+      stopActivePlayback();
+      stopEnglishPrompt();
+    };
+  }, []);
 
   const visibleEntries = entries.filter((entry) => {
     if (entry.status === 'unanswered') {
@@ -77,7 +102,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       if (!playing) {
         setPlayingId(null);
       }
-    });
+    }, { allowDemoFallback: entry.isSampleData, onError: message => { setPlayingId(null); setError(message); } });
   };
 
   return (
@@ -91,6 +116,9 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
         onLogoClick={onBackToDashboard}
       />
 
+      <p className="px-5 text-sm text-[#157A4C]" role="status">{lessonProgress(entries).completed} completed lessons · {lessonProgress(entries).waiting} questions waiting</p>
+      {error && <p role="alert" className="px-5 text-red-700">{error}</p>}
+      <LibraryBackupTools queueCount={queueCount} recordingCount={recordings.length} onLibraryChanged={onLibraryChanged} />
       {/* Search Bar & Filter Pills (px-5) */}
       <div className="w-full px-5 pt-1 pb-2.5 shrink-0">
         <div className="relative flex items-center">
@@ -157,7 +185,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           return (
             <div
               key={entry.id}
-              onClick={() => setSelectedEntry(entry)}
+              onClick={() => { setSelectedEntry(entry); setEditText(entry.edoText || ''); setError(null); }}
               className="w-full rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-4 py-3 flex items-center justify-between gap-3 shadow-sm cursor-pointer transition"
             >
               <div className="flex items-center gap-3.5 min-w-0">
@@ -204,7 +232,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   <button
                     type="button"
                     onClick={(e) => handlePlayWordAudio(e, entry)}
-                    aria-label={`Play pronunciation for ${entry.english}`}
+                    aria-label={`${isPlayingThis ? 'Stop' : 'Play'} pronunciation for ${entry.english}`}
                     className={`w-11 h-11 rounded-full flex items-center justify-center transition ${
                       isPlayingThis
                         ? 'bg-[#157A4C] text-white scale-105'
@@ -238,7 +266,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full rounded-3xl bg-[#FAF7F0] border border-[#E0D8C6] p-5 shadow-xl"
+            className="w-full max-h-[90%] overflow-y-auto rounded-3xl bg-[#FAF7F0] border border-[#E0D8C6] p-5 shadow-xl"
           >
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
@@ -255,9 +283,23 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                       ? 'Sample Prototype Entry'
                       : 'Local Community Contribution'}
                   </span>
-                  <h3 className="text-[22px] font-bold text-[#18241B] mt-0.5">
-                    {selectedEntry.english}
-                  </h3>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <h3 className="text-[22px] font-bold text-[#18241B]">
+                      {selectedEntry.english}
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        stopActivePlayback();
+                        speakEnglishPrompt(selectedEntry.english, false);
+                      }}
+                      aria-label={`Listen to English pronunciation for ${selectedEntry.english}`}
+                      title="Listen to English pronunciation"
+                      className="w-8 h-8 rounded-full bg-[#E4E9F2] hover:bg-[#D5DFEE] active:scale-95 text-[#223458] flex items-center justify-center shadow-sm transition shrink-0"
+                    >
+                      <Volume2 className="w-4 h-4 stroke-[2.2]" />
+                    </button>
+                  </div>
                   <p className="text-[15.5px] font-bold text-[#157A4C]">
                     {selectedEntry.edoText
                       ? `Edo: ${selectedEntry.edoText}`
@@ -280,6 +322,30 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
               </p>
             )}
 
+            <p className="mt-3 text-xs text-[#56625A]">Lesson ID: {selectedEntry.id}<br />Created: {new Date(selectedEntry.createdAt || selectedEntry.updatedAt).toLocaleDateString()}</p>
+            {selectedEntry.recordingId && recordings.find(recording => recording.id === selectedEntry.recordingId) && <RecordingInformation
+              key={selectedEntry.recordingId}
+              recording={recordings.find(recording => recording.id === selectedEntry.recordingId)!}
+              onSaved={onLibraryChanged}
+            />}
+            {!selectedEntry.isSampleData && <div className="mt-3 flex flex-col gap-2">
+              <label htmlFor="library-edo-text" className="text-sm font-semibold">Edo translation (optional)</label>
+              <input id="library-edo-text" className="edo-input" value={editText} onChange={event => setEditText(event.target.value)} />
+              <button disabled={busy} className="edo-secondary-btn" onClick={async () => {
+                setBusy(true);
+                try { await onEditText(selectedEntry.id, editText); setSelectedEntry(null); }
+                catch (error) { setError(String(error)); }
+                finally { setBusy(false); }
+              }}>Save translation text</button>
+              <button disabled={busy} className="edo-secondary-btn text-red-700" onClick={async () => {
+                if (!window.confirm(`Remove “${selectedEntry.english}” from the lesson list? Its original recording remains protected and included in exports.`)) return;
+                setBusy(true);
+                try { await onDeleteLesson(selectedEntry.id); stopActivePlayback(); setPlayingId(null); setSelectedEntry(null); }
+                catch (error) { setError(String(error)); }
+                finally { setBusy(false); }
+              }}>Remove lesson</button>
+              {error && <p role="alert" className="text-red-700 text-sm">{error}</p>}
+            </div>}
             <div className="mt-4 flex flex-col gap-2.5">
               {selectedEntry.hasAudio && (
                 <button
@@ -288,7 +354,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   className="edo-primary-btn bg-[#157A4C] text-white"
                 >
                   <Play className="w-4 h-4 fill-white" />
-                  <span>Play Recorded Pronunciation</span>
+                  <span>{playingId === selectedEntry.id ? 'Stop Recorded Pronunciation' : 'Play Recorded Pronunciation'}</span>
                 </button>
               )}
 

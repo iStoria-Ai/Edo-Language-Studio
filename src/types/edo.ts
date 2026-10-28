@@ -36,9 +36,11 @@ export interface EdoEntry {
   emoji: string;
   hasAudio: boolean;
   audioDataUrl?: string;
+  recordingId?: string;
   audioDurationSec?: number;
   status: EntryStatus;
   isSampleData: boolean;
+  createdAt?: string;
   updatedAt: string;
   notes?: string;
 }

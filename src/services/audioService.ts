@@ -23,33 +23,96 @@ export function stopEnglishPrompt(): void {
 }
 
 /**
- * Speaks the English question prompt using the browser's built-in Text-to-Speech (TTS).
- * Example for "Hand": "Hand. How do you say this in Edo?"
- * Note: Strictly for reading the English question; never claims to speak AI-generated Edo.
+ * Finds a natural British English voice across mobile and desktop browsers
+ * (iOS Safari, Android Chrome, macOS Safari, Windows, Linux).
  */
-export function speakEnglishPrompt(englishWord: string, includeQuestion = true): void {
+export function getBritishEnglishVoice(): SpeechSynthesisVoice | undefined {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    return undefined;
+  }
+  const voices = window.speechSynthesis.getVoices?.() || [];
+  if (!voices.length) {
+    return undefined;
+  }
+
+  const isEnGbLang = (lang: string) => {
+    const l = lang.toLowerCase().replace('_', '-');
+    return l === 'en-gb' || l.startsWith('en-gb-');
+  };
+
+  const isEnLang = (lang: string) => {
+    const l = lang.toLowerCase().replace('_', '-');
+    return l === 'en' || l.startsWith('en-');
+  };
+
+  const gbVoices = voices.filter((v) => isEnGbLang(v.lang));
+
+  if (gbVoices.length > 0) {
+    // 1. Natural / Enhanced / Neural / Premium British voices (e.g. iOS Enhanced voices, Edge Natural)
+    const naturalGb = gbVoices.find((v) =>
+      /natural|enhanced|premium|neural/i.test(v.name)
+    );
+    if (naturalGb) return naturalGb;
+
+    // 2. High-quality known British voices by name
+    const knownGoodGb = gbVoices.find((v) =>
+      /\b(daniel|oliver|serena|kate|martha|arthur|george|hazel|libby|ryan)\b/i.test(v.name)
+    );
+    if (knownGoodGb) return knownGoodGb;
+
+    // 3. Local service British voice (fast, responsive on iOS / macOS)
+    const localGb = gbVoices.find((v) => v.localService);
+    if (localGb) return localGb;
+
+    // 4. Any en-GB voice
+    return gbVoices[0];
+  }
+
+  // Fallback: voice with "UK", "British", or "United Kingdom" in name
+  const ukNamed = voices.find(
+    (v) =>
+      isEnLang(v.lang) &&
+      /\b(uk|british|united kingdom)\b/i.test(v.name)
+  );
+  if (ukNamed) return ukNamed;
+
+  // Fallback: any available English voice
+  const anyEnglish =
+    voices.find((v) => isEnLang(v.lang) && v.localService) ||
+    voices.find((v) => isEnLang(v.lang));
+  return anyEnglish || voices[0];
+}
+
+/**
+ * Speaks the English question or word pronunciation using the browser's built-in Text-to-Speech (TTS)
+ * in a natural British English voice.
+ * Users can tap the English speaker button to hear the correct pronunciation.
+ * Note: Strictly for English pronunciation playback; never used for Edo audio.
+ */
+export function speakEnglishPrompt(englishWord: string, includeQuestion = false): void {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     return;
   }
   try {
     stopActivePlayback();
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
     window.speechSynthesis.cancel();
 
     const cleanWord = englishWord.trim();
+    if (!cleanWord) return;
+
     const text = includeQuestion
       ? `${cleanWord}. How do you say this in Edo?`
       : cleanWord;
 
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'en-US';
-    utterance.rate = 0.92; // Clear, natural pacing
+    utterance.lang = 'en-GB';
+    utterance.rate = 0.90; // Natural, clear pacing for pronunciation
     utterance.pitch = 1.0;
 
-    // Select a clear English voice when available on iOS Safari / Android Chrome
-    const voices = window.speechSynthesis.getVoices?.() || [];
-    const preferredVoice =
-      voices.find((v) => v.lang === 'en-US' && v.localService) ||
-      voices.find((v) => v.lang.startsWith('en-'));
+    const preferredVoice = getBritishEnglishVoice();
     if (preferredVoice) {
       utterance.voice = preferredVoice;
     }

@@ -12,6 +12,7 @@ import {
   Sparkles,
   AlertCircle
 } from 'lucide-react';
+import { lessonProgress } from '../services/storageService';
 import { EdoEntry, TeachStepState } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
@@ -31,7 +32,8 @@ interface TeachEdoScreenProps {
   onSaveVoiceContribution: (
     entryId: string,
     audioDataUrl: string,
-    durationSec: number
+    durationSec: number,
+    edoText?: string
   ) => Promise<void>;
   onSaveWritingForContribution: (entryId: string, edoText: string) => Promise<void>;
   onSkipWritingKeepVoice: (entryId: string) => Promise<void>;
@@ -52,7 +54,9 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   onFinishForNow,
   onStepStateChange
 }) => {
-  const [questionIndex, setQuestionIndex] = useState(0);
+  const [questionIndex, setQuestionIndex] = useState(() => Math.max(0, questions.findIndex(q => !q.audioDataUrl)));
+  const [isSaving, setIsSaving] = useState(false);
+  const saveLock = useRef(false);
   const [stepState, setStepState] = useState<TeachStepState>(initialStepState);
 
   // Real microphone recording states
@@ -78,6 +82,8 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   const stopPlaybackRef = useRef<(() => void) | null>(null);
   const activeObjectUrlRef = useRef<string | undefined>(undefined);
   const writingActionsRef = useRef<HTMLDivElement | null>(null);
+
+  const confirmLeave = () => !isRecording && (!recordedAudioUrl || stepState === 'completed' || window.confirm('Discard this unsaved recording? Save it first to keep it.'));
 
   const currentQuestion = questions[questionIndex] || questions[0];
   const totalQuestions = Math.max(1, questions.length);
@@ -113,7 +119,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   const handlePlayEnglishQuestion = () => {
     if (isRecording) return;
     setRecordingError(null);
-    speakEnglishPrompt(currentQuestion.english, true);
+    speakEnglishPrompt(currentQuestion.english, false);
   };
 
   const handleToggleRecording = async () => {
@@ -213,6 +219,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   };
 
   const handleRecordAgain = () => {
+    if (recordedAudioUrl && stepState !== 'completed' && !window.confirm("Discard this unsaved recording and record again?")) return;
     stopActivePlayback();
     stopEnglishPrompt();
     setIsPlaying(false);
@@ -236,10 +243,16 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
       return;
     }
 
-    await onSaveVoiceContribution(currentQuestion.id, recordedAudioUrl, recordedDuration);
-    setWrittenText('');
-    setWritingError(null);
-    updateStep('writing');
+    if (saveLock.current) return;
+    saveLock.current = true;
+    setIsSaving(true);
+    try {
+      await onSaveVoiceContribution(currentQuestion.id, recordedAudioUrl, recordedDuration, writtenText.trim());
+      setWritingError(null);
+      setSavedModeNote(writtenText.trim() ? 'complete' : 'voice_only');
+      updateStep('completed');
+    } catch (error) { setRecordingError(error instanceof Error ? error.message : 'Unable to save. Please try again.'); }
+    finally { saveLock.current = false; setIsSaving(false); }
   };
 
   const handleSaveWritingAndContinue = async () => {
@@ -251,14 +264,16 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
       return;
     }
     setWritingError(null);
-    await onSaveWritingForContribution(currentQuestion.id, trimmed);
+    try { await onSaveWritingForContribution(currentQuestion.id, trimmed); }
+    catch (error) { setWritingError(String(error)); return; }
     setSavedModeNote('complete');
     updateStep('completed');
   };
 
   const handleCannotWrite = async () => {
     setWritingError(null);
-    await onSkipWritingKeepVoice(currentQuestion.id);
+    try { await onSkipWritingKeepVoice(currentQuestion.id); }
+    catch (error) { setWritingError(String(error)); return; }
     setSavedModeNote('voice_only');
     updateStep('completed');
   };
@@ -282,7 +297,13 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     } else {
       setSkipFeedback(null);
     }
-    setQuestionIndex((prev) => (prev + 1) % totalQuestions);
+    setQuestionIndex(prev => {
+      for (let offset = 1; offset <= totalQuestions; offset++) {
+        const index = (prev + offset) % totalQuestions;
+        if (!questions[index].audioDataUrl) return index;
+      }
+      return (prev + 1) % totalQuestions;
+    });
     updateStep('prompt');
   };
 
@@ -295,8 +316,8 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
         theme="green"
         sectionLabel="Teach Edo"
         rightAction="close"
-        onRightAction={onFinishForNow}
-        onLogoClick={onFinishForNow}
+        onRightAction={() => { if (confirmLeave()) onFinishForNow(); }}
+        onLogoClick={() => { if (confirmLeave()) onFinishForNow(); }}
       />
 
       {/* Consistent Progress Bar (Visible on States 3, 4, 5) */}
@@ -304,11 +325,11 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
         <div className="w-full px-5 pt-0.5 pb-1.5 shrink-0">
           <div className="flex items-center justify-between text-[13.5px] text-[#4E5B52] font-semibold mb-1">
             <span>
-              Question {questionIndex + 1} of {totalQuestions}
+              {lessonProgress(questions).completed} completed · {lessonProgress(questions).waiting} waiting
             </span>
             <button
               type="button"
-              onClick={onOpenTeachSomethingElse}
+              onClick={() => { if (confirmLeave()) onOpenTeachSomethingElse(); }}
               className="text-[#157A4C] hover:underline font-bold text-[13px]"
             >
               + Teach something else
@@ -486,6 +507,8 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
                 </div>
               </div>
 
+              <label className="text-sm font-semibold" htmlFor="recorded-edo-text">Edo translation (optional)</label>
+              <input id="recorded-edo-text" className="edo-input" value={writtenText} onChange={event => setWrittenText(event.target.value)} placeholder="Type Edo translation, or leave empty" />
               <div className="w-full flex flex-col gap-2.5 pt-0.5">
                 {/* Record Again Button */}
                 <button
@@ -500,10 +523,11 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
                 {/* Save Voice / Save and Continue Button */}
                 <button
                   type="button"
+                  disabled={isSaving}
                   onClick={handleSaveVoice}
                   className="edo-primary-btn bg-[#157A4C] hover:bg-[#11663F] text-white"
                 >
-                  <span>Save Voice &amp; Continue</span>
+                  <span>{isSaving ? 'Saving…' : 'Save Voice & Continue'}</span>
                   <ArrowRight className="w-5 h-5 stroke-[2.5]" />
                 </button>
               </div>
@@ -651,7 +675,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
 
             <button
               type="button"
-              onClick={onOpenTeachSomethingElse}
+              onClick={() => { if (confirmLeave()) onOpenTeachSomethingElse(); }}
               className="w-full min-h-[50px] py-2.5 px-5 rounded-2xl bg-[#E6F4ED] hover:bg-[#D5ECE0] border border-[#B9DFCA] text-[#157A4C] font-bold text-[15.5px] transition"
             >
               Teach Something Else

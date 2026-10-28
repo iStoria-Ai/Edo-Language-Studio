@@ -17,6 +17,7 @@ import {
 } from './types/edo';
 import {
   loadEntries,
+  loadLibrary,
   saveEntries,
   saveAudioFileLocally,
   resetToDefaultData,
@@ -24,6 +25,7 @@ import {
   INITIAL_EDO_ENTRIES,
   TEACH_QUESTION_IDS
 } from './services/storageService';
+import { LocalLibrary } from './services/libraryProtection';
 import { SCREEN_BADGE_MAP } from './components/ScreenBadgeHeader';
 import {
   PhoneFrame,
@@ -39,6 +41,7 @@ import { AiProgressScreen } from './screens/AiProgressScreen';
 import { TeachSomethingElseScreen } from './screens/TeachSomethingElseScreen';
 
 export const App: React.FC = () => {
+  const [libraryInfo, setLibraryInfo] = useState<LocalLibrary | null>(null);
   const [entries, setEntries] = useState<EdoEntry[]>(INITIAL_EDO_ENTRIES);
   const [activeSection, setActiveSection] = useState<AppSection>('welcome');
   const [teachStepState, setTeachStepState] = useState<TeachStepState>('prompt');
@@ -49,12 +52,16 @@ export const App: React.FC = () => {
   );
   // Developer-only preview bar: completely hidden from public users and disabled in production builds
   const [isDevPreviewMode, setIsDevPreviewMode] = useState<boolean>(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [isLoaded, setIsLoaded] = useState(false);
   const [showSystemModal, setShowSystemModal] = useState(false);
 
   useEffect(() => {
-    loadEntries().then((loaded) => {
-      setEntries(loaded);
-    });
+    loadLibrary().then((loaded) => {
+      setLibraryInfo(loaded);
+      setEntries(loaded.entries);
+      setIsLoaded(true);
+    }).catch(error => setStorageError(String(error)));
   }, []);
 
   useEffect(() => {
@@ -82,14 +89,21 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  const refreshLibrary = async () => {
+    const library = await loadLibrary();
+    setLibraryInfo(library);
+    setEntries(library.entries);
+  };
+
   const persistUpdatedEntries = async (updated: EdoEntry[]) => {
-    setEntries(updated);
-    await saveEntries(updated);
+    try { await saveEntries(updated, entries); }
+    catch (error) { await refreshLibrary(); throw error; }
+    await refreshLibrary();
   };
 
   // Ordered questions for Teach Edo flow (starting with "Hand")
   const teachQuestions: EdoEntry[] = TEACH_QUESTION_IDS.map(
-    (id) => entries.find((e) => e.id === id) || INITIAL_EDO_ENTRIES[0]
+    (id) => entries.find((e) => e.id === id) || INITIAL_EDO_ENTRIES.find(e => e.id === id)!
   );
 
   // Compute current numbered screen badge (used only in optional dev preview mode)
@@ -159,15 +173,21 @@ export const App: React.FC = () => {
   const handleSaveVoiceContribution = async (
     entryId: string,
     audioDataUrl: string,
-    durationSec: number
+    durationSec: number,
+    edoText?: string
   ) => {
+    const existing = entries.find(item => item.id === entryId);
+    if (existing?.audioDataUrl && !existing.isSampleData) throw new Error("This lesson already has a saved recording. Find it in the Language Library.");
     const persistedUri = await saveAudioFileLocally(entryId, audioDataUrl);
     const updated = entries.map((item) => {
       if (item.id !== entryId) return item;
-      const hasExistingWriting = Boolean(item.edoText && !item.isSampleData);
+      const translation = edoText?.trim() || (!item.isSampleData ? item.edoText : undefined);
+      const hasExistingWriting = Boolean(translation);
       return {
         ...item,
         hasAudio: true,
+        createdAt: item.createdAt || new Date().toISOString(),
+        edoText: translation,
         audioDataUrl: persistedUri,
         audioDurationSec: durationSec,
         isSampleData: false,
@@ -239,6 +259,7 @@ export const App: React.FC = () => {
         ...item,
         hasAudio: true,
         audioDataUrl: persistedUri,
+        createdAt: item.createdAt || new Date().toISOString(),
         audioDurationSec: durationSec,
         isSampleData: false,
         status: 'awaiting_review' as const,
@@ -256,7 +277,10 @@ export const App: React.FC = () => {
     audioDataUrl?: string;
     audioDurationSec?: number;
   }) => {
-    const newId = `custom-${Date.now()}`;
+    if (entries.some(item => item.english.trim().toLowerCase() === params.englishText.trim().toLowerCase() && !item.isSampleData && (item.audioDataUrl || item.edoText))) {
+      throw new Error("This English lesson already exists. Edit it in the Language Library.");
+    }
+    const newId = `custom-${crypto.randomUUID()}`;
     let persistedAudio: string | undefined = undefined;
     if (params.audioDataUrl) {
       persistedAudio = await saveAudioFileLocally(newId, params.audioDataUrl);
@@ -277,6 +301,7 @@ export const App: React.FC = () => {
 
     const newEntry: EdoEntry = {
       id: newId,
+      createdAt: new Date().toISOString(),
       english: params.englishText,
       edoText: hasWriting ? params.edoText.trim() : undefined,
       category,
@@ -295,8 +320,9 @@ export const App: React.FC = () => {
   };
 
   const handleResetData = async () => {
-    const defaults = await resetToDefaultData();
-    setEntries(defaults);
+    if (!window.confirm("Reset the visible lesson list? Original recordings remain protected and included in exports.")) return;
+    await resetToDefaultData();
+    await refreshLibrary();
     setShowSystemModal(false);
   };
 
@@ -350,6 +376,23 @@ export const App: React.FC = () => {
           <LanguageLibraryScreen
             entries={entries}
             onBackToDashboard={() => setActiveSection('dashboard')}
+            recordings={libraryInfo?.recordings || []}
+            queueCount={libraryInfo?.syncQueue.length || 0}
+            onLibraryChanged={refreshLibrary}
+            onEditText={async (id, text) => {
+              await persistUpdatedEntries(entries.map(entry => entry.id === id ? {
+                ...entry, edoText: text.trim() || undefined,
+                status: entry.audioDataUrl ? (text.trim() ? 'awaiting_review' : 'needs_writing') : 'needs_audio',
+                updatedAt: new Date().toISOString()
+              } : entry));
+            }}
+            onDeleteLesson={async id => {
+              const prompt = INITIAL_EDO_ENTRIES.find(entry => entry.id === id);
+              await persistUpdatedEntries(prompt ? entries.map(entry => entry.id === id ? {
+                ...prompt, edoText: undefined, audioDataUrl: undefined, hasAudio: false,
+                isSampleData: false, status: 'unanswered', createdAt: undefined
+              } : entry) : entries.filter(entry => entry.id !== id));
+            }}
             onJumpToHelpOthers={() => setActiveSection('help')}
           />
         );
@@ -369,6 +412,8 @@ export const App: React.FC = () => {
         );
     }
   };
+
+  if (!isLoaded) return <div className="p-6" role="status">{storageError || 'Loading your language library…'}</div>;
 
   // 1. Mobile Presentation (<= 640px):
   // Fills the entire available browser viewport without an extra phone frame or cream margins.
@@ -554,7 +599,7 @@ export const App: React.FC = () => {
                 className="px-4 py-2.5 rounded-xl bg-white border border-[#D8CFC0] hover:bg-[#F3EDE0] text-[#3A453D] text-[13px] font-bold flex items-center gap-1.5"
               >
                 <RotateCcw className="w-4 h-4" />
-                <span>Reset Local Data</span>
+                <span>Reset Lesson List</span>
               </button>
 
               <button

@@ -117,12 +117,12 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
     stopActivePlayback();
     setIsPlaying(false);
 
-    await onSaveCustomContribution({
+    try { await onSaveCustomContribution({
       englishText: trimmedMain || 'Community spoken phrase',
       edoText: trimmedEdo,
       audioDataUrl,
       audioDurationSec: audioDataUrl ? audioDuration : undefined
-    });
+    }); } catch (error) { setSavedNotice(String(error)); return; }
 
     const statusMsg =
       audioDataUrl && trimmedEdo
