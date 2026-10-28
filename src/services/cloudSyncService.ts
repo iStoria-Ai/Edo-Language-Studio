@@ -42,7 +42,7 @@ export interface GatewayDiagnostics {
  */
 export function getStoredContributorToken(): string {
   try {
-    return localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+    return (typeof localStorage !== 'undefined' ? localStorage.getItem(TOKEN_STORAGE_KEY) : '') || '';
   } catch {
     return '';
   }
