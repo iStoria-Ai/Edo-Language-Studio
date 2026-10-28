@@ -27,6 +27,13 @@ export type EntryStatus =
   | 'awaiting_review'  // Both voice and writing contributed locally, awaiting community verification
   | 'sample_entry';    // Clearly marked sample data for prototype demonstration
 
+export type CloudSyncStatus =
+  | 'local_only'
+  | 'pending_upload'
+  | 'uploading'
+  | 'synced_to_drive'
+  | 'upload_failed';
+
 export interface EdoEntry {
   id: string;
   english: string;
@@ -43,6 +50,13 @@ export interface EdoEntry {
   createdAt?: string;
   updatedAt: string;
   notes?: string;
+
+  // Cloud Synchronization References (Step 2A)
+  cloudAudioFileId?: string;
+  cloudMetadataFileId?: string;
+  syncStatus?: CloudSyncStatus;
+  lastSyncAttempt?: string;
+  syncError?: string;
 }
 
 export interface StudioStats {

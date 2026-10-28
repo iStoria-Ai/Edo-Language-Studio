@@ -5,7 +5,7 @@
   "description": "Edo Language Studio — Community-powered Android & iOS application to preserve and teach the Edo language of Nigeria.",
   "type": "module",
   "scripts": {
-    "test": "node tests/storage.cjs",
+    "test": "node tests/storage.cjs && node tests/cloudSync.cjs",
     "audio:generate": "node scripts/generate-kokoro-audio.mjs",
     "dev": "vite --port 5173",
     "build": "tsc && vite build",

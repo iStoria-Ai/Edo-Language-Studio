@@ -17,6 +17,7 @@ import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
 import { playAudioRecording, stopActivePlayback, speakEnglishPrompt, stopEnglishPrompt, playEnglishPronunciation } from '../services/audioService';
+import { streamAudioFromGateway } from '../services/cloudSyncService';
 
 interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
@@ -25,6 +26,7 @@ interface LanguageLibraryScreenProps {
   onLibraryChanged: () => Promise<void>;
   onEditText: (id: string, text: string) => Promise<void>;
   onDeleteLesson: (id: string) => Promise<void>;
+  onRetrySync?: (id: string) => Promise<void>;
   onBackToDashboard: () => void;
   onJumpToHelpOthers: () => void;
 }
@@ -38,6 +40,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   onLibraryChanged,
   onEditText,
   onDeleteLesson,
+  onRetrySync,
   onBackToDashboard,
   onJumpToHelpOthers
 }) => {
@@ -49,6 +52,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [activeFilter, setActiveFilter] = useState<LibraryFilter>('all');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [selectedEntry, setSelectedEntry] = useState<EdoEntry | null>(null);
+  const [confirmDeleteEntry, setConfirmDeleteEntry] = useState<EdoEntry | null>(null);
 
   useEffect(() => {
     return () => {
@@ -87,7 +91,11 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     return true;
   });
 
-  const handlePlayWordAudio = (e: React.MouseEvent, entry: EdoEntry) => {
+  const activeSelectedEntry = selectedEntry
+    ? (entries.find((e) => e.id === selectedEntry.id) || selectedEntry)
+    : null;
+
+  const handlePlayWordAudio = async (e: React.MouseEvent, entry: EdoEntry) => {
     e.stopPropagation();
     if (!entry.hasAudio) return;
 
@@ -97,12 +105,44 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       return;
     }
 
-    setPlayingId(entry.id);
-    playAudioRecording(entry.audioDataUrl, entry.audioDurationSec || 3, (_sec, playing) => {
-      if (!playing) {
-        setPlayingId(null);
+    if (entry.audioDataUrl || entry.isSampleData) {
+      setPlayingId(entry.id);
+      playAudioRecording(entry.audioDataUrl, entry.audioDurationSec || 3, (_sec, playing) => {
+        if (!playing) {
+          setPlayingId(null);
+        }
+      }, { allowDemoFallback: entry.isSampleData, onError: message => { setPlayingId(null); setError(message); } });
+      return;
+    }
+
+    // Audio bytes were cleaned up after verified Drive upload, stream from gateway
+    if (entry.cloudAudioFileId) {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setError('Audio is stored in Google Drive. Connect to internet to play.');
+        return;
       }
-    }, { allowDemoFallback: entry.isSampleData, onError: message => { setPlayingId(null); setError(message); } });
+      setPlayingId(entry.id);
+      setError(null);
+      try {
+        const streamRes = await streamAudioFromGateway(entry.cloudAudioFileId);
+        if (!streamRes.ok || !streamRes.audioDataUrl) {
+          setPlayingId(null);
+          setError(streamRes.error || 'Could not stream recording from Google Drive.');
+          return;
+        }
+        playAudioRecording(streamRes.audioDataUrl, entry.audioDurationSec || 3, (_sec, playing) => {
+          if (!playing) {
+            setPlayingId(null);
+          }
+        }, { allowDemoFallback: false, onError: message => { setPlayingId(null); setError(message); } });
+      } catch (err: any) {
+        setPlayingId(null);
+        setError(String(err?.message || err));
+      }
+      return;
+    }
+
+    setError('No recorded voice is available to play.');
   };
 
   return (
@@ -185,7 +225,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           return (
             <div
               key={entry.id}
-              onClick={() => { setSelectedEntry(entry); setEditText(entry.edoText || ''); setError(null); }}
+              onClick={() => { setSelectedEntry(entry); setEditText(entry.edoText || ''); setError(null); setConfirmDeleteEntry(null); }}
               className="w-full rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-4 py-3 flex items-center justify-between gap-3 shadow-sm cursor-pointer transition"
             >
               <div className="flex items-center gap-3.5 min-w-0">
@@ -209,6 +249,26 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                     ) : (
                       <span className="px-1.5 py-0.5 rounded bg-[#E6F4ED] text-[#157A4C] text-[10px] font-bold uppercase tracking-wider shrink-0">
                         Local
+                      </span>
+                    )}
+                    {entry.syncStatus === 'pending_upload' && (
+                      <span className="px-1.5 py-0.5 rounded bg-[#FEF3C7] text-[#92400E] text-[10px] font-bold uppercase tracking-wider shrink-0" title="Queued for Drive sync">
+                        Pending Sync
+                      </span>
+                    )}
+                    {entry.syncStatus === 'uploading' && (
+                      <span className="px-1.5 py-0.5 rounded bg-[#FEF3C7] text-[#B45309] text-[10px] font-bold uppercase tracking-wider shrink-0 animate-pulse" title="Syncing to Google Drive...">
+                        Syncing...
+                      </span>
+                    )}
+                    {entry.syncStatus === 'synced_to_drive' && (
+                      <span className="px-1.5 py-0.5 rounded bg-[#E0EDFF] text-[#1D6CE0] text-[10px] font-bold uppercase tracking-wider shrink-0" title="Verified and stored in Google Drive">
+                        Drive Synced
+                      </span>
+                    )}
+                    {entry.syncStatus === 'upload_failed' && (
+                      <span className="px-1.5 py-0.5 rounded bg-[#FEE2E2] text-[#B91C1C] text-[10px] font-bold uppercase tracking-wider shrink-0" title={entry.syncError || 'Drive upload pending retry'}>
+                        Retry Pending
                       </span>
                     )}
                   </div>
@@ -261,7 +321,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       {/* Word Details Bottom Sheet / Modal */}
       {selectedEntry && (
         <div
-          onClick={() => setSelectedEntry(null)}
+          onClick={() => { setSelectedEntry(null); setConfirmDeleteEntry(null); }}
           className="absolute inset-0 bg-black/40 z-20 flex items-end justify-center p-3"
         >
           <div
@@ -322,7 +382,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedEntry(null)}
+                onClick={() => { setSelectedEntry(null); setConfirmDeleteEntry(null); }}
                 className="w-9 h-9 rounded-full bg-[#EFE9DA] flex items-center justify-center text-[#3A453D]"
               >
                 <X className="w-4 h-4" />
@@ -336,29 +396,137 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
             )}
 
             <p className="mt-3 text-xs text-[#56625A]">Lesson ID: {selectedEntry.id}<br />Created: {new Date(selectedEntry.createdAt || selectedEntry.updatedAt).toLocaleDateString()}</p>
+            {selectedEntry.syncStatus === 'synced_to_drive' && (
+              <div className="mt-2 text-xs text-[#1D6CE0] bg-[#EFF6FF] border border-[#BFDBFE] rounded-xl p-2.5 flex items-center justify-between">
+                <span>Google Drive: Verified &amp; Synced</span>
+                <span className="font-mono text-[10px] text-[#475569]">{selectedEntry.cloudAudioFileId?.slice(0, 14)}...</span>
+              </div>
+            )}
+            {selectedEntry.syncStatus === 'uploading' && (
+              <div className="mt-2 text-xs text-[#92400E] bg-[#FFFBEB] border border-[#FDE68A] rounded-xl p-2.5 flex items-center justify-between">
+                <span className="animate-pulse">Uploading to Google Drive in background...</span>
+              </div>
+            )}
+            {selectedEntry.syncStatus === 'pending_upload' && (
+              <div className="mt-2 text-xs text-[#92400E] bg-[#FFFBEB] border border-[#FDE68A] rounded-xl p-2.5 flex items-center justify-between">
+                <span>Queued for background cloud upload</span>
+              </div>
+            )}
+            {selectedEntry.syncStatus === 'upload_failed' && (
+              <div className="mt-2 text-xs text-[#B91C1C] bg-[#FEF2F2] border border-[#FECACA] rounded-xl p-2.5 flex items-center justify-between gap-2">
+                <span className="truncate">{selectedEntry.syncError || 'Drive upload pending retry'}</span>
+                {onRetrySync && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      await onRetrySync(selectedEntry.id);
+                      setBusy(false);
+                      setSelectedEntry(null);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-[#DC2626] text-white font-bold text-[11px] shrink-0 hover:bg-[#B91C1C]"
+                  >
+                    {busy ? 'Uploading...' : 'Retry Upload'}
+                  </button>
+                )}
+              </div>
+            )}
+            {selectedEntry.hasAudio && (!selectedEntry.syncStatus || selectedEntry.syncStatus === 'local_only') && !selectedEntry.isSampleData && (
+              <div className="mt-2 text-xs text-[#556058] bg-[#F3EDE0] border border-[#E0D8C6] rounded-xl p-2.5 flex items-center justify-between gap-2">
+                <span>Stored locally on this device</span>
+                {onRetrySync && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      await onRetrySync(selectedEntry.id);
+                      setBusy(false);
+                      setSelectedEntry(null);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-[#157A4C] text-white font-bold text-[11px] shrink-0 hover:bg-[#126941]"
+                  >
+                    {busy ? 'Uploading...' : 'Upload to Drive'}
+                  </button>
+                )}
+              </div>
+            )}
             {selectedEntry.recordingId && recordings.find(recording => recording.id === selectedEntry.recordingId) && <RecordingInformation
               key={selectedEntry.recordingId}
               recording={recordings.find(recording => recording.id === selectedEntry.recordingId)!}
               onSaved={onLibraryChanged}
             />}
-            {!selectedEntry.isSampleData && <div className="mt-3 flex flex-col gap-2">
-              <label htmlFor="library-edo-text" className="text-sm font-semibold">Edo translation (optional)</label>
-              <input id="library-edo-text" className="edo-input" value={editText} onChange={event => setEditText(event.target.value)} />
-              <button disabled={busy} className="edo-secondary-btn" onClick={async () => {
-                setBusy(true);
-                try { await onEditText(selectedEntry.id, editText); setSelectedEntry(null); }
-                catch (error) { setError(String(error)); }
-                finally { setBusy(false); }
-              }}>Save translation text</button>
-              <button disabled={busy} className="edo-secondary-btn text-red-700" onClick={async () => {
-                if (!window.confirm(`Remove “${selectedEntry.english}” from the lesson list? Its original recording remains protected and included in exports.`)) return;
-                setBusy(true);
-                try { await onDeleteLesson(selectedEntry.id); stopActivePlayback(); setPlayingId(null); setSelectedEntry(null); }
-                catch (error) { setError(String(error)); }
-                finally { setBusy(false); }
-              }}>Remove lesson</button>
-              {error && <p role="alert" className="text-red-700 text-sm">{error}</p>}
-            </div>}
+            {confirmDeleteEntry ? (
+              <div className="mt-4 p-4 rounded-2xl bg-[#FEF2F2] border border-[#FCA5A5] flex flex-col gap-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-5 h-5 text-[#DC2626] shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-[15px] font-bold text-[#991B1B]">
+                      Are you sure you want to remove this word and its recording?
+                    </h4>
+                    <p className="text-[12px] text-[#7F1D1D] mt-1 leading-relaxed">
+                      &ldquo;{confirmDeleteEntry.english}&rdquo; will be removed from your active lessons. As a safeguard, original voice recordings are never deleted automatically and remain preserved in the protected storage archive.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2.5 mt-1">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setConfirmDeleteEntry(null)}
+                    className="flex-1 py-2.5 px-4 rounded-xl border border-[#D1D5DB] bg-white text-[#374151] font-bold text-[14px] hover:bg-gray-50 active:scale-95 transition text-center"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await onDeleteLesson(confirmDeleteEntry.id);
+                        stopActivePlayback();
+                        setPlayingId(null);
+                        setConfirmDeleteEntry(null);
+                        setSelectedEntry(null);
+                      } catch (err) {
+                        setError(String(err));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-[14px] active:scale-95 transition shadow-sm text-center"
+                  >
+                    {busy ? 'Removing...' : 'Remove'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-3 flex flex-col gap-2">
+                {!selectedEntry.isSampleData && (
+                  <>
+                    <label htmlFor="library-edo-text" className="text-sm font-semibold">Edo translation (optional)</label>
+                    <input id="library-edo-text" className="edo-input" value={editText} onChange={event => setEditText(event.target.value)} />
+                    <button disabled={busy} className="edo-secondary-btn" onClick={async () => {
+                      setBusy(true);
+                      try { await onEditText(selectedEntry.id, editText); setSelectedEntry(null); }
+                      catch (error) { setError(String(error)); }
+                      finally { setBusy(false); }
+                    }}>Save translation text</button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  disabled={busy}
+                  className="edo-secondary-btn text-red-700 hover:bg-red-50"
+                  onClick={() => setConfirmDeleteEntry(selectedEntry)}
+                >
+                  Remove word and recording
+                </button>
+                {error && <p role="alert" className="text-red-700 text-sm">{error}</p>}
+              </div>
+            )}
             <div className="mt-4 flex flex-col gap-2.5">
               {selectedEntry.hasAudio && (
                 <button

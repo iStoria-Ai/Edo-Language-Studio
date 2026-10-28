@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Smartphone,
   LayoutGrid,
@@ -7,8 +7,18 @@ import {
   X,
   CheckCircle2,
   Database,
-  CloudOff
+  CloudOff,
+  CloudUpload
 } from 'lucide-react';
+import {
+  getStoredContributorToken,
+  setStoredContributorToken,
+  uploadRecordingToGateway,
+  pingGatewayPost,
+  streamAudioFromGateway,
+  enqueueForBackgroundUpload,
+  processBackgroundUploadQueue
+} from './services/cloudSyncService';
 import {
   AppSection,
   EdoEntry,
@@ -55,6 +65,9 @@ export const App: React.FC = () => {
   const [storageError, setStorageError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [showSystemModal, setShowSystemModal] = useState(false);
+  const [contributorTokenInput, setContributorTokenInput] = useState(() => getStoredContributorToken());
+  const [gatewayStatus, setGatewayStatus] = useState<string | null>(null);
+  const [isTestingGateway, setIsTestingGateway] = useState(false);
 
   useEffect(() => {
     loadLibrary().then((loaded) => {
@@ -169,7 +182,68 @@ export const App: React.FC = () => {
     }
   };
 
-  // Save Voice in Teach Edo (Screen 4 -> Screen 5)
+  const entriesRef = useRef<EdoEntry[]>(entries);
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
+
+  const triggerBackgroundWorker = () => {
+    window.setTimeout(() => {
+      processBackgroundUploadQueue(
+        () => entriesRef.current,
+        async (entryId, cloudAudioId, cloudMetaId) => {
+          // Success & Verified: update entry, safely clear local audio bytes, retain lesson record
+          const updated = entriesRef.current.map(item => {
+            if (item.id !== entryId) return item;
+            return {
+              ...item,
+              hasAudio: true,
+              cloudAudioFileId: cloudAudioId,
+              cloudMetadataFileId: cloudMetaId,
+              syncStatus: 'synced_to_drive' as const,
+              audioDataUrl: undefined, // Safely remove local audio bytes (Requirement 8)
+              lastSyncAttempt: new Date().toISOString(),
+              syncError: undefined
+            };
+          });
+          await persistUpdatedEntries(updated);
+        },
+        async (entryId, errorMsg) => {
+          // Failure: KEEP local audio intact, record error
+          const updated = entriesRef.current.map(item => {
+            if (item.id !== entryId) return item;
+            return {
+              ...item,
+              syncStatus: 'upload_failed' as const,
+              lastSyncAttempt: new Date().toISOString(),
+              syncError: errorMsg
+            };
+          });
+          await persistUpdatedEntries(updated);
+        },
+        (entryId, status) => {
+          setEntries(prev => prev.map(item => item.id === entryId ? { ...item, syncStatus: status } : item));
+        }
+      ).catch(err => {
+        console.warn('Background upload worker error:', err);
+      });
+    }, 50);
+  };
+
+  useEffect(() => {
+    const handleOnline = () => {
+      triggerBackgroundWorker();
+    };
+    window.addEventListener('online', handleOnline);
+    if (isLoaded) {
+      triggerBackgroundWorker();
+    }
+    return () => {
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [isLoaded]);
+
+  // Save Voice in Teach Edo (Screen 4 -> Screen 5) — Fast & Non-Blocking
   const handleSaveVoiceContribution = async (
     entryId: string,
     audioDataUrl: string,
@@ -178,24 +252,45 @@ export const App: React.FC = () => {
   ) => {
     const existing = entries.find(item => item.id === entryId);
     if (existing?.audioDataUrl && !existing.isSampleData) throw new Error("This lesson already has a saved recording. Find it in the Language Library.");
+
+    // 1. Immediately save recording to local device storage (<20ms)
     const persistedUri = await saveAudioFileLocally(entryId, audioDataUrl);
-    const updated = entries.map((item) => {
-      if (item.id !== entryId) return item;
-      const translation = edoText?.trim() || (!item.isSampleData ? item.edoText : undefined);
-      const hasExistingWriting = Boolean(translation);
-      return {
-        ...item,
-        hasAudio: true,
-        createdAt: item.createdAt || new Date().toISOString(),
-        edoText: translation,
-        audioDataUrl: persistedUri,
-        audioDurationSec: durationSec,
-        isSampleData: false,
-        status: hasExistingWriting ? ('awaiting_review' as const) : ('needs_writing' as const),
-        updatedAt: new Date().toISOString()
-      };
-    });
+    const translation = edoText?.trim() || (!existing?.isSampleData ? existing?.edoText : undefined);
+    const hasExistingWriting = Boolean(translation);
+    const nowIso = new Date().toISOString();
+
+    const entryToSave: EdoEntry = {
+      ...(existing || {
+        id: entryId,
+        english: 'Lesson',
+        category: 'word' as const,
+        illustrationKey: 'mic',
+        emoji: '🎙️'
+      }),
+      hasAudio: true,
+      createdAt: existing?.createdAt || nowIso,
+      edoText: translation,
+      audioDataUrl: persistedUri,
+      audioDurationSec: durationSec,
+      isSampleData: false,
+      status: hasExistingWriting ? ('awaiting_review' as const) : ('needs_writing' as const),
+      syncStatus: 'pending_upload',
+      updatedAt: nowIso
+    };
+
+    // 2. Persist locally first: takes <20ms, completely local!
+    const updated = entries.map((item) => (item.id === entryId ? entryToSave : item));
     await persistUpdatedEntries(updated);
+
+    // 3. Enqueue for background upload and trigger worker asynchronously (NON-BLOCKING)
+    enqueueForBackgroundUpload(entryId);
+    triggerBackgroundWorker();
+  };
+
+  // Retry upload for a locally saved voice recording to Google Drive
+  const handleRetryUpload = async (entryId: string) => {
+    enqueueForBackgroundUpload(entryId);
+    triggerBackgroundWorker();
   };
 
   // Save Optional Writing in Teach Edo (Screen 5 -> Screen 6)
@@ -246,28 +341,34 @@ export const App: React.FC = () => {
     await persistUpdatedEntries(updated);
   };
 
-  // Help Others: Attach voice recording to an existing written contribution
+  // Help Others: Attach voice recording to an existing written contribution — Fast & Non-Blocking
   const handleAttachAudioToEntry = async (
     entryId: string,
     audioDataUrl: string,
     durationSec: number
   ) => {
     const persistedUri = await saveAudioFileLocally(entryId, audioDataUrl);
-    const updated = entries.map((item) => {
-      if (item.id !== entryId) return item;
-      return {
-        ...item,
-        hasAudio: true,
-        audioDataUrl: persistedUri,
-        createdAt: item.createdAt || new Date().toISOString(),
-        audioDurationSec: durationSec,
-        isSampleData: false,
-        status: 'awaiting_review' as const,
-        updatedAt: new Date().toISOString(),
-        notes: 'Completed via Help Others (pronunciation attached to existing Edo writing)'
-      };
-    });
+    const existing = entries.find(item => item.id === entryId);
+    const nowIso = new Date().toISOString();
+
+    const entryToSave: EdoEntry = {
+      ...(existing || { id: entryId, english: '', category: 'word' as const, illustrationKey: 'mic', emoji: '🎙️' }),
+      hasAudio: true,
+      audioDataUrl: persistedUri,
+      createdAt: existing?.createdAt || nowIso,
+      audioDurationSec: durationSec,
+      isSampleData: false,
+      status: 'awaiting_review' as const,
+      syncStatus: 'pending_upload',
+      updatedAt: nowIso,
+      notes: 'Completed via Help Others (pronunciation attached to existing Edo writing)'
+    };
+
+    const updated = entries.map((item) => (item.id === entryId ? entryToSave : item));
     await persistUpdatedEntries(updated);
+
+    enqueueForBackgroundUpload(entryId);
+    triggerBackgroundWorker();
   };
 
   // Teach Something Else: Save custom word/phrase/sentence
@@ -393,6 +494,7 @@ export const App: React.FC = () => {
                 isSampleData: false, status: 'unanswered', createdAt: undefined
               } : entry) : entries.filter(entry => entry.id !== id));
             }}
+            onRetrySync={handleRetryUpload}
             onJumpToHelpOthers={() => setActiveSection('help')}
           />
         );
@@ -581,14 +683,91 @@ export const App: React.FC = () => {
                 </p>
               </div>
 
-              <div className="rounded-2xl bg-white border border-[#E5DEC9] p-3.5">
-                <h3 className="font-bold text-[#1D6CE0] flex items-center gap-1.5 mb-1">
-                  <CloudOff className="w-4 h-4" />
-                  <span>Prepared for Future Cloud &amp; API Connection</span>
-                </h3>
-                <p className="text-[#3C473F] text-[12.5px]">
-                  Ready to connect to cloud storage, community verification workflows, and the future Edo Language API for Rodion AI and RodionCut.
+              <div className="rounded-2xl bg-white border border-[#E5DEC9] p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-[#1D6CE0] flex items-center gap-1.5">
+                    <CloudUpload className="w-4 h-4" />
+                    <span>Google Drive Cloud Gateway</span>
+                  </h3>
+                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                    getStoredContributorToken() ? 'bg-[#E6F4ED] text-[#157A4C]' : 'bg-[#FEF3C7] text-[#92400E]'
+                  }`}>
+                    {getStoredContributorToken() ? 'Token Configured' : 'Needs Token'}
+                  </span>
+                </div>
+                <p className="text-[#3C473F] text-[12px] leading-snug">
+                  Upload recordings directly to Google Drive. Contributor credentials are kept strictly private on your device.
                 </p>
+                <div>
+                  <label htmlFor="contributor-token" className="block text-[11.5px] font-semibold text-[#556058] mb-1">
+                    Your Contributor Access Token
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      id="contributor-token"
+                      type="password"
+                      value={contributorTokenInput}
+                      onChange={(e) => setContributorTokenInput(e.target.value)}
+                      placeholder="Enter contributor token"
+                      className="flex-1 px-3 py-1.5 rounded-xl border border-[#DED6C4] bg-[#FAF8F5] text-[12.5px] font-mono focus:outline-none focus:border-[#157A4C]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStoredContributorToken(contributorTokenInput);
+                        setGatewayStatus('Token saved locally on this device.');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white text-[12px] font-bold"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    type="button"
+                    disabled={isTestingGateway}
+                    onClick={async () => {
+                      setIsTestingGateway(true);
+                      setGatewayStatus('Testing connection to gateway...');
+                      try {
+                        const ping = await pingGatewayPost(contributorTokenInput);
+                        if (ping.ok) {
+                          const userName = ping.data?.verifiedUser?.name || 'Verified Contributor';
+                          const userRole = ping.data?.verifiedUser?.role || 'contributor';
+                          setGatewayStatus(`Connected! Verified as ${userName} (${userRole}).`);
+                        } else {
+                          setGatewayStatus(`Gateway check: ${ping.error || 'Unauthorized'}`);
+                        }
+                      } catch (err: any) {
+                        setGatewayStatus(`Connection test error: ${err?.message || err}`);
+                      } finally {
+                        setIsTestingGateway(false);
+                      }
+                    }}
+                    className="text-[12px] font-bold text-[#1D6CE0] hover:underline flex items-center gap-1"
+                  >
+                    {isTestingGateway ? 'Testing connection...' : 'Test Gateway Connection'}
+                  </button>
+                  {contributorTokenInput && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setContributorTokenInput('');
+                        setStoredContributorToken('');
+                        setGatewayStatus('Contributor token removed from device.');
+                      }}
+                      className="text-[11px] font-semibold text-red-600 hover:underline"
+                    >
+                      Clear Token
+                    </button>
+                  )}
+                </div>
+                {gatewayStatus && (
+                  <p className="text-[11.5px] p-2 rounded-lg bg-[#F5F2EA] border border-[#E5DEC9] text-[#2C3830]">
+                    {gatewayStatus}
+                  </p>
+                )}
               </div>
             </div>
 
