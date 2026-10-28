@@ -1,0 +1,162 @@
+[
+  {
+    "id": "word-hand",
+    "english": "Hand",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-hand.mp3",
+    "slowFile": "audio/english/word-hand_slow.mp3",
+    "normalDurationSec": 0.8,
+    "slowDurationSec": 1.025
+  },
+  {
+    "id": "word-eye",
+    "english": "Eye",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-eye.mp3",
+    "slowFile": "audio/english/word-eye_slow.mp3",
+    "normalDurationSec": 0.75,
+    "slowDurationSec": 0.95
+  },
+  {
+    "id": "word-water",
+    "english": "Water",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-water.mp3",
+    "slowFile": "audio/english/word-water_slow.mp3",
+    "normalDurationSec": 0.9,
+    "slowDurationSec": 1.175
+  },
+  {
+    "id": "word-food",
+    "english": "Food",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-food.mp3",
+    "slowFile": "audio/english/word-food_slow.mp3",
+    "normalDurationSec": 0.8,
+    "slowDurationSec": 1.05
+  },
+  {
+    "id": "word-house",
+    "english": "House",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-house.mp3",
+    "slowFile": "audio/english/word-house_slow.mp3",
+    "normalDurationSec": 0.8,
+    "slowDurationSec": 1
+  },
+  {
+    "id": "phrase-good-morning",
+    "english": "Good morning",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/phrase-good-morning.mp3",
+    "slowFile": "audio/english/phrase-good-morning_slow.mp3",
+    "normalDurationSec": 1.575,
+    "slowDurationSec": 1.975
+  },
+  {
+    "id": "phrase-welcome",
+    "english": "Welcome / Come in",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/phrase-welcome.mp3",
+    "slowFile": "audio/english/phrase-welcome_slow.mp3",
+    "normalDurationSec": 1.925,
+    "slowDurationSec": 2.375
+  },
+  {
+    "id": "phrase-thank-you",
+    "english": "Thank you",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/phrase-thank-you.mp3",
+    "slowFile": "audio/english/phrase-thank-you_slow.mp3",
+    "normalDurationSec": 1.325,
+    "slowDurationSec": 1.7
+  },
+  {
+    "id": "word-child",
+    "english": "Child",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-child.mp3",
+    "slowFile": "audio/english/word-child_slow.mp3",
+    "normalDurationSec": 0.85,
+    "slowDurationSec": 1.075
+  },
+  {
+    "id": "word-sun",
+    "english": "Sun",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-sun.mp3",
+    "slowFile": "audio/english/word-sun_slow.mp3",
+    "normalDurationSec": 0.7,
+    "slowDurationSec": 0.875
+  },
+  {
+    "id": "word-tree",
+    "english": "Tree",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-tree.mp3",
+    "slowFile": "audio/english/word-tree_slow.mp3",
+    "normalDurationSec": 0.8,
+    "slowDurationSec": 0.975
+  },
+  {
+    "id": "word-book",
+    "english": "Book",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/word-book.mp3",
+    "slowFile": "audio/english/word-book_slow.mp3",
+    "normalDurationSec": 0.625,
+    "slowDurationSec": 0.8
+  },
+  {
+    "id": "phrase-how-are-you",
+    "english": "How are you?",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/phrase-how-are-you.mp3",
+    "slowFile": "audio/english/phrase-how-are-you_slow.mp3",
+    "normalDurationSec": 1.625,
+    "slowDurationSec": 2.05
+  },
+  {
+    "id": "sentence-your-name",
+    "english": "What is your name?",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/sentence-your-name.mp3",
+    "slowFile": "audio/english/sentence-your-name_slow.mp3",
+    "normalDurationSec": 1.925,
+    "slowDurationSec": 2.35
+  },
+  {
+    "id": "sentence-going",
+    "english": "Where are you going?",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/sentence-going.mp3",
+    "slowFile": "audio/english/sentence-going_slow.mp3",
+    "normalDurationSec": 1.875,
+    "slowDurationSec": 2.3
+  },
+  {
+    "id": "sentence-coming",
+    "english": "I am coming",
+    "voice": "bf_emma",
+    "model": "Kokoro-82M",
+    "normalFile": "audio/english/sentence-coming.mp3",
+    "slowFile": "audio/english/sentence-coming_slow.mp3",
+    "normalDurationSec": 1.675,
+    "slowDurationSec": 2.175
+  }
+]

@@ -4,12 +4,104 @@
  */
 
 let activeAudioElement: HTMLAudioElement | null = null;
+let activeEnglishAudioElement: HTMLAudioElement | null = null;
+
+export type EnglishSpeechSpeed = 'normal' | 'slow';
 
 /**
- * Immediately stops any active English Text-to-Speech (TTS) prompt so it can never bleed
- * into a microphone recording or overlap with recorded voice playback.
+ * Registry of pre-generated Kokoro-82M TTS British English recordings (bf_emma).
+ * All 16 prompts have dedicated natural-speed (1.0x) and slow deliberate (0.8x) MP3 files.
+ */
+export const KOKORO_PROMPT_AUDIO: Record<string, { normal: string; slow: string }> = {
+  'word-hand': { normal: 'audio/english/word-hand.mp3', slow: 'audio/english/word-hand_slow.mp3' },
+  'word-eye': { normal: 'audio/english/word-eye.mp3', slow: 'audio/english/word-eye_slow.mp3' },
+  'word-water': { normal: 'audio/english/word-water.mp3', slow: 'audio/english/word-water_slow.mp3' },
+  'word-food': { normal: 'audio/english/word-food.mp3', slow: 'audio/english/word-food_slow.mp3' },
+  'word-house': { normal: 'audio/english/word-house.mp3', slow: 'audio/english/word-house_slow.mp3' },
+  'phrase-good-morning': { normal: 'audio/english/phrase-good-morning.mp3', slow: 'audio/english/phrase-good-morning_slow.mp3' },
+  'phrase-welcome': { normal: 'audio/english/phrase-welcome.mp3', slow: 'audio/english/phrase-welcome_slow.mp3' },
+  'phrase-thank-you': { normal: 'audio/english/phrase-thank-you.mp3', slow: 'audio/english/phrase-thank-you_slow.mp3' },
+  'word-child': { normal: 'audio/english/word-child.mp3', slow: 'audio/english/word-child_slow.mp3' },
+  'word-sun': { normal: 'audio/english/word-sun.mp3', slow: 'audio/english/word-sun_slow.mp3' },
+  'word-tree': { normal: 'audio/english/word-tree.mp3', slow: 'audio/english/word-tree_slow.mp3' },
+  'word-book': { normal: 'audio/english/word-book.mp3', slow: 'audio/english/word-book_slow.mp3' },
+  'phrase-how-are-you': { normal: 'audio/english/phrase-how-are-you.mp3', slow: 'audio/english/phrase-how-are-you_slow.mp3' },
+  'sentence-your-name': { normal: 'audio/english/sentence-your-name.mp3', slow: 'audio/english/sentence-your-name_slow.mp3' },
+  'sentence-going': { normal: 'audio/english/sentence-going.mp3', slow: 'audio/english/sentence-going_slow.mp3' },
+  'sentence-coming': { normal: 'audio/english/sentence-coming.mp3', slow: 'audio/english/sentence-coming_slow.mp3' }
+};
+
+const KOKORO_TEXT_LOOKUP: Record<string, string> = {
+  'hand': 'word-hand',
+  'eye': 'word-eye',
+  'water': 'word-water',
+  'food': 'word-food',
+  'house': 'word-house',
+  'good morning': 'phrase-good-morning',
+  'welcome / come in': 'phrase-welcome',
+  'welcome': 'phrase-welcome',
+  'come in': 'phrase-welcome',
+  'thank you': 'phrase-thank-you',
+  'child': 'word-child',
+  'sun': 'word-sun',
+  'tree': 'word-tree',
+  'book': 'word-book',
+  'how are you?': 'phrase-how-are-you',
+  'how are you': 'phrase-how-are-you',
+  'what is your name?': 'sentence-your-name',
+  'what is your name': 'sentence-your-name',
+  'where are you going?': 'sentence-going',
+  'where are you going': 'sentence-going',
+  'i am coming': 'sentence-coming'
+};
+
+function getBaseUrl(): string {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env && typeof import.meta.env.BASE_URL === 'string') {
+      return import.meta.env.BASE_URL;
+    }
+  } catch {
+    // Node.js or mock environment fallback
+  }
+  return '/';
+}
+
+/**
+ * Resolves a Kokoro audio asset URL for a given prompt ID or English text.
+ */
+export function getKokoroAudioUrl(promptIdOrText: string, speed: EnglishSpeechSpeed = 'normal'): string | null {
+  const normalizedKey = promptIdOrText.trim().toLowerCase();
+  const promptId = KOKORO_PROMPT_AUDIO[promptIdOrText]
+    ? promptIdOrText
+    : KOKORO_TEXT_LOOKUP[normalizedKey];
+
+  if (!promptId || !KOKORO_PROMPT_AUDIO[promptId]) {
+    return null;
+  }
+
+  const relativePath = speed === 'slow'
+    ? KOKORO_PROMPT_AUDIO[promptId].slow
+    : KOKORO_PROMPT_AUDIO[promptId].normal;
+
+  const base = getBaseUrl();
+  const cleanBase = base.endsWith('/') ? base : `${base}/`;
+  return `${cleanBase}${relativePath}`;
+}
+
+/**
+ * Immediately stops any active English pronunciation audio or Text-to-Speech (TTS)
+ * so it never bleeds into microphone recording or overlaps with recorded voice playback.
  */
 export function stopEnglishPrompt(): void {
+  if (activeEnglishAudioElement) {
+    try {
+      activeEnglishAudioElement.pause();
+      activeEnglishAudioElement.currentTime = 0;
+    } catch {
+      // Ignore pause error
+    }
+    activeEnglishAudioElement = null;
+  }
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
     return;
   }
@@ -84,32 +176,27 @@ export function getBritishEnglishVoice(): SpeechSynthesisVoice | undefined {
 }
 
 /**
- * Speaks the English question or word pronunciation using the browser's built-in Text-to-Speech (TTS)
- * in a natural British English voice.
- * Users can tap the English speaker button to hear the correct pronunciation.
- * Note: Strictly for English pronunciation playback; never used for Edo audio.
+ * Speaks the English text using the browser's built-in Text-to-Speech (TTS)
+ * in a natural British English voice, used as fallback for custom lessons.
  */
-export function speakEnglishPrompt(englishWord: string, includeQuestion = false): void {
+function speakEnglishTtsFallback(
+  text: string,
+  speed: EnglishSpeechSpeed = 'normal',
+  onEnd?: () => void
+): void {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+    onEnd?.();
     return;
   }
   try {
-    stopActivePlayback();
     if (window.speechSynthesis.paused) {
       window.speechSynthesis.resume();
     }
     window.speechSynthesis.cancel();
 
-    const cleanWord = englishWord.trim();
-    if (!cleanWord) return;
-
-    const text = includeQuestion
-      ? `${cleanWord}. How do you say this in Edo?`
-      : cleanWord;
-
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = 'en-GB';
-    utterance.rate = 0.90; // Natural, clear pacing for pronunciation
+    utterance.rate = speed === 'slow' ? 0.70 : 0.90;
     utterance.pitch = 1.0;
 
     const preferredVoice = getBritishEnglishVoice();
@@ -117,10 +204,107 @@ export function speakEnglishPrompt(englishWord: string, includeQuestion = false)
       utterance.voice = preferredVoice;
     }
 
+    utterance.onend = () => onEnd?.();
+    utterance.onerror = () => onEnd?.();
+
     window.speechSynthesis.speak(utterance);
   } catch (err) {
-    console.warn('TTS not available on this device:', err);
+    console.warn('TTS playback error:', err);
+    onEnd?.();
   }
+}
+
+/**
+ * Plays English pronunciation using the high-quality Kokoro TTS British English model (bf_emma).
+ * Uses pre-rendered Kokoro audio files for instant zero-latency playback on mobile/web without paid APIs.
+ * Supports both normal and slow pronunciation speeds.
+ * For open-ended custom contributions, falls back cleanly to natural British English browser synthesis.
+ */
+export function playEnglishPronunciation(
+  promptIdOrText: string,
+  speed: EnglishSpeechSpeed = 'normal',
+  onProgress?: (isPlaying: boolean) => void
+): () => void {
+  // Stop any active Edo audio and previous English playback
+  stopActivePlayback();
+  stopEnglishPrompt();
+
+  const kokoroUrl = getKokoroAudioUrl(promptIdOrText, speed);
+  const cleanText = promptIdOrText.trim();
+
+  if (kokoroUrl && typeof Audio !== 'undefined') {
+    const audio = new Audio();
+    audio.preload = 'auto';
+    audio.src = kokoroUrl;
+    activeEnglishAudioElement = audio;
+    onProgress?.(true);
+
+    audio.onended = () => {
+      if (activeEnglishAudioElement === audio) {
+        activeEnglishAudioElement = null;
+      }
+      onProgress?.(false);
+    };
+
+    audio.onerror = () => {
+      if (activeEnglishAudioElement === audio) {
+        activeEnglishAudioElement = null;
+      }
+      console.warn(`Could not load Kokoro audio at ${kokoroUrl}, using British TTS fallback.`);
+      speakEnglishTtsFallback(cleanText, speed, () => onProgress?.(false));
+    };
+
+    audio.play().catch((err) => {
+      console.warn('Kokoro audio autoplay blocked or failed, using British TTS fallback:', err);
+      if (activeEnglishAudioElement === audio) {
+        activeEnglishAudioElement = null;
+      }
+      speakEnglishTtsFallback(cleanText, speed, () => onProgress?.(false));
+    });
+
+    return () => {
+      try {
+        audio.pause();
+        audio.currentTime = 0;
+      } catch {
+        // Ignore
+      }
+      if (activeEnglishAudioElement === audio) {
+        activeEnglishAudioElement = null;
+      }
+      onProgress?.(false);
+    };
+  }
+
+  // Fallback for custom entries or non-DOM test environments
+  onProgress?.(true);
+  speakEnglishTtsFallback(cleanText, speed, () => onProgress?.(false));
+
+  return () => {
+    stopEnglishPrompt();
+    onProgress?.(false);
+  };
+}
+
+/**
+ * Backwards-compatible convenience function for English pronunciation playback.
+ */
+export function speakEnglishPrompt(
+  englishWord: string,
+  includeQuestion = false,
+  speed: EnglishSpeechSpeed = 'normal'
+): void {
+  const cleanWord = englishWord.trim();
+  if (!cleanWord) return;
+
+  if (includeQuestion) {
+    stopActivePlayback();
+    stopEnglishPrompt();
+    speakEnglishTtsFallback(`${cleanWord}. How do you say this in Edo?`, speed);
+    return;
+  }
+
+  playEnglishPronunciation(cleanWord, speed);
 }
 
 /**

@@ -19,6 +19,8 @@ import { WordIllustration } from '../components/WordIllustration';
 import {
   speakEnglishPrompt,
   stopEnglishPrompt,
+  playEnglishPronunciation,
+  EnglishSpeechSpeed,
   MicrophoneRecorder,
   playAudioRecording,
   stopActivePlayback,
@@ -106,20 +108,33 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     setRecordedObjectUrl(undefined);
   };
 
+  const [englishSpeed, setEnglishSpeed] = useState<EnglishSpeechSpeed>('normal');
+  const [isPlayingEnglish, setIsPlayingEnglish] = useState(false);
+  const stopEnglishRef = useRef<(() => void) | null>(null);
+
   useEffect(() => {
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
       recorderRef.current?.cancel();
       stopActivePlayback();
+      stopEnglishRef.current?.();
       stopEnglishPrompt();
       cleanupCurrentObjectUrl();
     };
   }, []);
 
-  const handlePlayEnglishQuestion = () => {
+  const handlePlayEnglishQuestion = (speedOverride?: EnglishSpeechSpeed) => {
     if (isRecording) return;
     setRecordingError(null);
-    speakEnglishPrompt(currentQuestion.english, false);
+    const speed = speedOverride || englishSpeed;
+    if (stopEnglishRef.current) {
+      stopEnglishRef.current();
+    }
+    stopEnglishRef.current = playEnglishPronunciation(
+      currentQuestion.id || currentQuestion.english,
+      speed,
+      (playing) => setIsPlayingEnglish(playing)
+    );
   };
 
   const handleToggleRecording = async () => {
@@ -129,7 +144,9 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     if (!isRecording) {
       // Stop any active playback or English question TTS before starting the microphone
       stopActivePlayback();
+      stopEnglishRef.current?.();
       stopEnglishPrompt();
+      setIsPlayingEnglish(false);
       cleanupCurrentObjectUrl();
       setRecordedAudioUrl(undefined);
       setRecordedDuration(0);
@@ -280,7 +297,9 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
 
   const handleNextWord = (wasSkipped = false) => {
     stopActivePlayback();
+    stopEnglishRef.current?.();
     stopEnglishPrompt();
+    setIsPlayingEnglish(false);
     setIsPlaying(false);
     setPlaybackSeconds(0);
     cleanupCurrentObjectUrl();
@@ -366,21 +385,57 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
                 size={stepState === 'writing' ? 'md' : 'lg'}
               />
 
-              {/* English Text-to-Speech Speaker Button */}
+              {/* English Pronunciation Speaker Button & Speed Controls */}
               {stepState === 'prompt' && (
-                <div className="absolute right-1 top-2 flex flex-col items-center">
+                <div className="absolute right-1 top-2 flex flex-col items-center gap-1.5">
                   <button
                     type="button"
                     disabled={isRecording}
-                    onClick={handlePlayEnglishQuestion}
-                    aria-label={`Listen to English question for ${currentQuestion.english}`}
-                    className="w-[52px] h-[52px] rounded-full bg-[#E4E9F2] hover:bg-[#D5DFEE] active:scale-95 text-[#223458] flex items-center justify-center shadow-sm transition disabled:opacity-45"
+                    onClick={() => handlePlayEnglishQuestion()}
+                    aria-label={`Listen to English pronunciation for ${currentQuestion.english} (${englishSpeed} speed)`}
+                    className={`w-[52px] h-[52px] rounded-full flex items-center justify-center shadow-sm transition active:scale-95 disabled:opacity-45 ${
+                      isPlayingEnglish
+                        ? 'bg-[#157A4C] text-white scale-105'
+                        : 'bg-[#E4E9F2] hover:bg-[#D5DFEE] text-[#223458]'
+                    }`}
                   >
                     <Volume2 className="w-6 h-6 stroke-[2.3]" />
                   </button>
-                  <span className="text-[12.5px] font-bold text-[#354338] mt-1">
-                    Play
-                  </span>
+                  {/* Normal (1x) vs Slow Speed Toggle */}
+                  <div className="flex items-center bg-[#E4E9F2]/95 border border-[#D0D9E7] rounded-full p-0.5 shadow-xs">
+                    <button
+                      type="button"
+                      disabled={isRecording}
+                      onClick={() => {
+                        setEnglishSpeed('normal');
+                        handlePlayEnglishQuestion('normal');
+                      }}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-bold transition ${
+                        englishSpeed === 'normal'
+                          ? 'bg-[#223458] text-white shadow-xs'
+                          : 'text-[#4A5872] hover:text-[#223458]'
+                      }`}
+                      title="Normal speed (Kokoro British English)"
+                    >
+                      1x
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isRecording}
+                      onClick={() => {
+                        setEnglishSpeed('slow');
+                        handlePlayEnglishQuestion('slow');
+                      }}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-bold transition ${
+                        englishSpeed === 'slow'
+                          ? 'bg-[#223458] text-white shadow-xs'
+                          : 'text-[#4A5872] hover:text-[#223458]'
+                      }`}
+                      title="Slow speed (Deliberate Kokoro pronunciation)"
+                    >
+                      Slow
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

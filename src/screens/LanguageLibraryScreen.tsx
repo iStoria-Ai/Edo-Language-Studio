@@ -16,7 +16,7 @@ import { ProtectedRecording } from '../services/libraryProtection';
 import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
-import { playAudioRecording, stopActivePlayback, speakEnglishPrompt, stopEnglishPrompt } from '../services/audioService';
+import { playAudioRecording, stopActivePlayback, speakEnglishPrompt, stopEnglishPrompt, playEnglishPronunciation } from '../services/audioService';
 
 interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
@@ -283,22 +283,35 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                       ? 'Sample Prototype Entry'
                       : 'Local Community Contribution'}
                   </span>
-                  <div className="flex items-center gap-2 mt-0.5">
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                     <h3 className="text-[22px] font-bold text-[#18241B]">
                       {selectedEntry.english}
                     </h3>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        stopActivePlayback();
-                        speakEnglishPrompt(selectedEntry.english, false);
-                      }}
-                      aria-label={`Listen to English pronunciation for ${selectedEntry.english}`}
-                      title="Listen to English pronunciation"
-                      className="w-8 h-8 rounded-full bg-[#E4E9F2] hover:bg-[#D5DFEE] active:scale-95 text-[#223458] flex items-center justify-center shadow-sm transition shrink-0"
-                    >
-                      <Volume2 className="w-4 h-4 stroke-[2.2]" />
-                    </button>
+                    <div className="flex items-center gap-1 bg-[#E4E9F2] rounded-full p-0.5 border border-[#D5DFEE]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playEnglishPronunciation(selectedEntry.id || selectedEntry.english, 'normal');
+                        }}
+                        aria-label={`Listen to normal English pronunciation for ${selectedEntry.english}`}
+                        title="Kokoro British pronunciation (1x normal)"
+                        className="px-2 py-0.5 rounded-full bg-white hover:bg-[#D5DFEE] active:scale-95 text-[#223458] flex items-center gap-1 transition shadow-xs text-[11px] font-bold"
+                      >
+                        <Volume2 className="w-3.5 h-3.5 stroke-[2.2]" />
+                        <span>1x</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          playEnglishPronunciation(selectedEntry.id || selectedEntry.english, 'slow');
+                        }}
+                        aria-label={`Listen to slow English pronunciation for ${selectedEntry.english}`}
+                        title="Kokoro British pronunciation (slow deliberate)"
+                        className="px-2 py-0.5 rounded-full hover:bg-[#D5DFEE] active:scale-95 text-[#223458] flex items-center justify-center transition text-[11px] font-bold"
+                      >
+                        Slow
+                      </button>
+                    </div>
                   </div>
                   <p className="text-[15.5px] font-bold text-[#157A4C]">
                     {selectedEntry.edoText

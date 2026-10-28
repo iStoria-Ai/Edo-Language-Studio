@@ -138,10 +138,22 @@ function wav() {
   const britishVoice = player.getBritishEnglishVoice();
   assert.equal(britishVoice.lang, 'en-GB', 'selects British English voice');
   assert.match(britishVoice.name, /Daniel/i, 'prioritizes enhanced British voice');
-  player.speakEnglishPrompt('Hand');
-  assert.equal(spokenUtterance.text, 'Hand', 'speaks clean English pronunciation');
-  assert.equal(spokenUtterance.lang, 'en-GB', 'uses en-GB language tag');
-  assert.equal(spokenUtterance.voice.lang, 'en-GB', 'applies British voice to utterance');
+  const fs = require('fs');
+  const path = require('path');
+  assert.equal(Object.keys(player.KOKORO_PROMPT_AUDIO).length, 16, 'has all 16 prompt recordings');
+  for (const [id, files] of Object.entries(player.KOKORO_PROMPT_AUDIO)) {
+    assert.ok(fs.existsSync(path.join('public', files.normal)), `Kokoro normal audio exists for ${id}`);
+    assert.ok(fs.existsSync(path.join('public', files.slow)), `Kokoro slow audio exists for ${id}`);
+  }
+  player.playEnglishPronunciation('word-hand', 'normal');
+  assert.equal(playedSource, '/audio/english/word-hand.mp3', 'plays pre-rendered Kokoro normal audio');
+  player.playEnglishPronunciation('word-hand', 'slow');
+  assert.equal(playedSource, '/audio/english/word-hand_slow.mp3', 'plays pre-rendered Kokoro slow audio');
+  player.stopEnglishPrompt();
+  player.speakEnglishPrompt('Custom phrase with question', true);
+  assert.equal(spokenUtterance.text, 'Custom phrase with question. How do you say this in Edo?');
+  assert.equal(spokenUtterance.lang, 'en-GB', 'uses en-GB language tag for fallback');
+  assert.equal(spokenUtterance.voice.lang, 'en-GB', 'applies British voice to fallback utterance');
   player.stopEnglishPrompt();
   assert.ok(speechCancelled, 'cancels speech synthesis on stop');
   const translationConflict = await pure.protectEntries(legacy.map(entry => entry.id === 'word-hand' ? {...entry, edoText: 'Alternative validated text'} : entry));
