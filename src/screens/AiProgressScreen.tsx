@@ -26,26 +26,30 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
     {
       id: 1,
       title: 'Stage 1 – Basic words',
-      subtitle: '(Hand, leg, eye, water...)',
-      status: 'collecting_active'
+      subtitle: stats.wordsCollected > 0
+        ? `(${stats.wordsCollected} unique word${stats.wordsCollected === 1 ? '' : 's'} contributed)`
+        : '(Water, food, hand, eye...)',
+      status: stats.wordsCollected > 0 ? 'collecting_active' : 'pending'
     },
     {
       id: 2,
       title: 'Stage 2 – Short phrases',
-      subtitle: '(My hand, eat, drink, greetings...)',
-      status: 'collecting_active'
+      subtitle: stats.phrasesAndSentences > 0
+        ? `(${stats.phrasesAndSentences} phrase${stats.phrasesAndSentences === 1 ? '' : 's'} contributed)`
+        : '(Greetings, daily expressions...)',
+      status: stats.phrasesAndSentences > 0 ? 'collecting_active' : 'pending'
     },
     {
       id: 3,
       title: 'Stage 3 – Simple sentences',
       subtitle: '(How are you? Where are you going?...)',
-      status: 'in_progress'
+      status: 'pending'
     },
     {
       id: 4,
       title: 'Stage 4 – Everyday conversations',
-      subtitle: '(Home, market, family stories...)',
-      status: 'in_progress'
+      subtitle: '(Family stories, market dialogues...)',
+      status: 'pending'
     },
     {
       id: 5,
@@ -81,11 +85,11 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
             </h1>
           </div>
 
-          {/* Transparent Demo Disclaimer Banner */}
+          {/* Real Community Contribution Status Banner */}
           <div className="mb-3 px-3.5 py-2 rounded-2xl bg-[#F1ECFA] border border-[#D7C8F3] flex items-start gap-2 text-[11.5px] text-[#442982] font-medium leading-snug">
             <Info className="w-4 h-4 shrink-0 mt-0.5 text-[#6E4BC3]" />
             <span>
-              <strong>Prototype Demonstration Metrics:</strong> Target community milestones + your {stats.localContributionsCount} local contributions. AI model training is not yet active.
+              <strong>Real Community Contributions:</strong> {stats.totalContributions} contribution{stats.totalContributions === 1 ? '' : 's'} recorded. AI model training will activate once collection targets are reached.
             </span>
           </div>
 
@@ -97,7 +101,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.demoWordsCollected.toLocaleString()}
+                  {stats.wordsCollected.toLocaleString()}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Words collected
@@ -111,7 +115,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.demoVoiceRecordings.toLocaleString()}
+                  {stats.voiceRecordings.toLocaleString()}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Voice recordings
@@ -125,7 +129,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.demoWrittenWords.toLocaleString()}
+                  {stats.writtenWords.toLocaleString()}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Written words
@@ -139,7 +143,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.demoPhrasesAndSentences.toLocaleString()}
+                  {stats.phrasesAndSentences.toLocaleString()}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Phrases &amp; sentences
@@ -152,17 +156,17 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
           <div className="mt-3 rounded-2xl bg-white border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between text-[12px]">
             <div>
               <span className="text-[#5C665E]">Review Queue: </span>
-              <strong className="text-[#6E4BC3]">{stats.localAwaitingReviewCount + 18}</strong>
+              <strong className="text-[#6E4BC3]">{stats.reviewQueueCount}</strong>
             </div>
             <div className="h-3.5 w-px bg-[#E0D8C6]" />
             <div>
               <span className="text-[#5C665E]">Needs Help: </span>
-              <strong className="text-[#1D6CE0]">{stats.localNeedsHelpCount}</strong>
+              <strong className="text-[#1D6CE0]">{stats.needsHelpCount}</strong>
             </div>
             <div className="h-3.5 w-px bg-[#E0D8C6]" />
             <div>
               <span className="text-[#5C665E]">AI Status: </span>
-              <strong className="text-[#785502]">Collecting</strong>
+              <strong className="text-[#785502]">{stats.totalContributions > 0 ? 'Collecting' : 'Ready'}</strong>
             </div>
           </div>
         </div>

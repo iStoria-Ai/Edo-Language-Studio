@@ -60,6 +60,15 @@ export interface EdoEntry {
 }
 
 export interface StudioStats {
+  wordsCollected: number;
+  voiceRecordings: number;
+  writtenWords: number;
+  phrasesAndSentences: number;
+  totalContributions: number;
+  reviewQueueCount: number;
+  needsHelpCount: number;
+
+  // Legacy/Backwards-compatible aliases
   demoWordsCollected: number;
   demoVoiceRecordings: number;
   demoWrittenWords: number;

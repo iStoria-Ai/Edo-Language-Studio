@@ -333,16 +333,7 @@ export async function uploadRecordingToGateway(
     }
   }
 
-  if (!token) {
-    return {
-      ok: false,
-      status: 'error',
-      errorCode: 'MISSING_TOKEN',
-      lessonId,
-      recordingId,
-      message: 'No contributor token configured on this device. Contributor authentication is required to upload to Google Drive.'
-    };
-  }
+  // Token is optional: if present, sends contributor credential; if omitted, sends automatic community upload
 
   let parsedAudio: { mimeType: string; base64: string };
   try {
@@ -585,7 +576,7 @@ export async function processBackgroundUploadQueue(
   if (typeof navigator !== 'undefined' && !navigator.onLine) return;
 
   const token = getStoredContributorToken();
-  if (!token) return;
+  // Queue processes automatically; token is forwarded if configured, or empty for automatic community upload
 
   isProcessingUploadQueue = true;
 

@@ -358,24 +358,58 @@ export async function resetToDefaultData(): Promise<EdoEntry[]> {
 }
 
 export function computeStudioStats(entries: EdoEntry[]): StudioStats {
-  const localEntries = entries.filter((e) => !e.isSampleData);
-  const localVoiceCount = entries.filter((e) => !e.isSampleData && e.hasAudio).length;
-  const localWrittenCount = entries.filter((e) => !e.isSampleData && Boolean(e.edoText?.trim())).length;
-  const localNeedsHelpCount = entries.filter(
-    (e) => e.status === 'needs_writing' || e.status === 'needs_audio'
+  // Only real contributions (!isSampleData) that have actual recorded audio or submitted spelling
+  const realEntries = entries.filter(
+    (e) => !e.isSampleData && (e.hasAudio || Boolean(e.edoText && e.edoText.trim()) || e.status === 'awaiting_review')
+  );
+
+  // Count each unique English word only once under Words Collected
+  const uniqueWords = new Set(
+    realEntries
+      .filter((e) => e.category === 'word' && (e.hasAudio || Boolean(e.edoText && e.edoText.trim())) && e.english.trim())
+      .map((e) => e.english.trim().toLowerCase())
+  );
+  const wordsCollected = uniqueWords.size;
+
+  // Count each valid Edo audio recording under Voice Recordings, without counting duplicates
+  const voiceRecordings = realEntries.filter(
+    (e) => e.hasAudio && (Boolean(e.audioDataUrl) || Boolean(e.cloudAudioFileId) || Boolean(e.recordingId))
   ).length;
-  const localAwaitingReviewCount = entries.filter((e) => e.status === 'awaiting_review').length;
+
+  // Count each word with a submitted Edo spelling under Written Words
+  const writtenWords = realEntries.filter(
+    (e) => e.category === 'word' && Boolean(e.edoText && e.edoText.trim())
+  ).length;
+
+  // Count actual contributed phrases and sentences under Phrases & Sentences
+  const phrasesAndSentences = realEntries.filter(
+    (e) => (e.category === 'phrase' || e.category === 'sentence') && (e.hasAudio || Boolean(e.edoText && e.edoText.trim()))
+  ).length;
+
+  // Recalculate Review Queue and Needs Help numbers from actual contribution statuses
+  const reviewQueueCount = realEntries.filter((e) => e.status === 'awaiting_review').length;
+  const needsHelpCount = entries.filter(
+    (e) => !e.isSampleData && (e.status === 'needs_writing' || e.status === 'needs_audio')
+  ).length;
 
   return {
-    // Clearly labeled demonstration numbers from reference UI + live local delta
-    demoWordsCollected: 2530 + localEntries.length,
-    demoVoiceRecordings: 1840 + localVoiceCount,
-    demoWrittenWords: 1200 + localWrittenCount,
-    demoPhrasesAndSentences: 320 + entries.filter((e) => e.category !== 'word' && !e.isSampleData).length,
-    localContributionsCount: localEntries.length,
-    localVoiceCount,
-    localWrittenCount,
-    localNeedsHelpCount,
-    localAwaitingReviewCount
+    wordsCollected,
+    voiceRecordings,
+    writtenWords,
+    phrasesAndSentences,
+    totalContributions: realEntries.length,
+    reviewQueueCount,
+    needsHelpCount,
+
+    // Aliases ensuring any legacy callers stay consistent
+    demoWordsCollected: wordsCollected,
+    demoVoiceRecordings: voiceRecordings,
+    demoWrittenWords: writtenWords,
+    demoPhrasesAndSentences: phrasesAndSentences,
+    localContributionsCount: realEntries.length,
+    localVoiceCount: voiceRecordings,
+    localWrittenCount: writtenWords,
+    localNeedsHelpCount: needsHelpCount,
+    localAwaitingReviewCount: reviewQueueCount
   };
 }

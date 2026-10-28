@@ -185,11 +185,72 @@ function wav() {
   const emptyBackup = await pure.makeBackup(await pure.protectEntries([]));
   await api.importLibrary(emptyBackup);
   assert.equal((await api.loadLibrary()).recordings.length, 0);
-  // Optional disposable browser fixtures; never read or modify the real user library.
-  if (process.argv.includes('--fixtures')) {
-    const { writeFileSync } = require('node:fs');
-    writeFileSync('/tmp/edo-step4-fixture.json', completeBackup);
-    writeFileSync('/tmp/edo-step4-corrupt.json', JSON.stringify(corrupt));
+  // AI Progress real stats recalculation tests
+  {
+    // Test: Sample-only entries return exactly 0 for all contribution stats
+    const sampleStats = api.computeStudioStats(api.INITIAL_EDO_ENTRIES);
+    assert.equal(sampleStats.wordsCollected, 0, 'No words counted when only sample entries exist');
+    assert.equal(sampleStats.voiceRecordings, 0, 'No voice recordings counted when only sample entries exist');
+    assert.equal(sampleStats.writtenWords, 0, 'No written words counted when only sample entries exist');
+    assert.equal(sampleStats.phrasesAndSentences, 0, 'No phrases counted when only sample entries exist');
+    assert.equal(sampleStats.totalContributions, 0);
+
+    // Test: Real contributions counted accurately and deduplicated
+    const testRealEntries = [
+      {
+        id: 'real-1',
+        english: 'Water',
+        edoText: 'Ame',
+        category: 'word',
+        hasAudio: true,
+        audioDataUrl: 'data:audio/wav;base64,AAAA',
+        isSampleData: false,
+        status: 'awaiting_review',
+        updatedAt: '2026-10-28T12:00:00Z'
+      },
+      {
+        id: 'real-2',
+        english: 'Water', // Duplicate English word
+        edoText: 'Ame',
+        category: 'word',
+        hasAudio: true,
+        audioDataUrl: 'data:audio/wav;base64,BBBB',
+        isSampleData: false,
+        status: 'awaiting_review',
+        updatedAt: '2026-10-28T12:05:00Z'
+      },
+      {
+        id: 'real-3',
+        english: 'Food',
+        edoText: '', // No written spelling
+        category: 'word',
+        hasAudio: true,
+        cloudAudioFileId: 'drive_food_audio_123',
+        isSampleData: false,
+        status: 'needs_writing',
+        updatedAt: '2026-10-28T12:10:00Z'
+      },
+      {
+        id: 'real-4',
+        english: 'Good morning',
+        edoText: 'Koyo',
+        category: 'phrase',
+        hasAudio: false,
+        isSampleData: false,
+        status: 'needs_audio',
+        updatedAt: '2026-10-28T12:15:00Z'
+      }
+    ];
+
+    const realStats = api.computeStudioStats(testRealEntries);
+    assert.equal(realStats.wordsCollected, 2, 'Unique words: Water, Food (deduplicated)');
+    assert.equal(realStats.voiceRecordings, 3, 'Entries with valid local or cloud audio: real-1, real-2, real-3');
+    assert.equal(realStats.writtenWords, 2, 'Words with submitted non-empty spelling: real-1 and real-2');
+    assert.equal(realStats.phrasesAndSentences, 1, 'Phrases or sentences: real-4');
+    assert.equal(realStats.totalContributions, 4);
+    assert.equal(realStats.reviewQueueCount, 2, 'real-1 and real-2 awaiting review (no arbitrary +18)');
+    assert.equal(realStats.needsHelpCount, 2, 'real-3 needs_writing and real-4 needs_audio');
   }
-  console.log('PASS: legacy preservation; stable IDs; original formats/bytes; independent permissions; persistent/idempotent queue; backup verification; additive import; duplicate/conflict protection; fresh restore; offline playback source; storage failure atomicity; retained audio; corruption rejection.');
+
+  console.log('PASS: legacy preservation; stable IDs; original formats/bytes; independent permissions; persistent/idempotent queue; backup verification; additive import; duplicate/conflict protection; fresh restore; offline playback source; storage failure atomicity; retained audio; corruption rejection; real studio statistics recalculation.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

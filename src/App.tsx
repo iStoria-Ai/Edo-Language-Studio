@@ -7,14 +7,10 @@ import {
   X,
   CheckCircle2,
   Database,
-  CloudOff,
-  CloudUpload
+  CloudOff
 } from 'lucide-react';
 import {
-  getStoredContributorToken,
-  setStoredContributorToken,
   uploadRecordingToGateway,
-  pingGatewayPost,
   streamAudioFromGateway,
   enqueueForBackgroundUpload,
   processBackgroundUploadQueue
@@ -65,9 +61,6 @@ export const App: React.FC = () => {
   const [storageError, setStorageError] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [showSystemModal, setShowSystemModal] = useState(false);
-  const [contributorTokenInput, setContributorTokenInput] = useState(() => getStoredContributorToken());
-  const [gatewayStatus, setGatewayStatus] = useState<string | null>(null);
-  const [isTestingGateway, setIsTestingGateway] = useState(false);
 
   useEffect(() => {
     loadLibrary().then((loaded) => {
@@ -681,93 +674,6 @@ export const App: React.FC = () => {
                 <p className="text-[#3C473F] text-[12.5px]">
                   Initial library words are marked <strong>Sample</strong> until community review is connected. You have added {stats.localContributionsCount} local contributions on this device.
                 </p>
-              </div>
-
-              <div className="rounded-2xl bg-white border border-[#E5DEC9] p-3.5 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-[#1D6CE0] flex items-center gap-1.5">
-                    <CloudUpload className="w-4 h-4" />
-                    <span>Google Drive Cloud Gateway</span>
-                  </h3>
-                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                    getStoredContributorToken() ? 'bg-[#E6F4ED] text-[#157A4C]' : 'bg-[#FEF3C7] text-[#92400E]'
-                  }`}>
-                    {getStoredContributorToken() ? 'Token Configured' : 'Needs Token'}
-                  </span>
-                </div>
-                <p className="text-[#3C473F] text-[12px] leading-snug">
-                  Upload recordings directly to Google Drive. Contributor credentials are kept strictly private on your device.
-                </p>
-                <div>
-                  <label htmlFor="contributor-token" className="block text-[11.5px] font-semibold text-[#556058] mb-1">
-                    Your Contributor Access Token
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      id="contributor-token"
-                      type="password"
-                      value={contributorTokenInput}
-                      onChange={(e) => setContributorTokenInput(e.target.value)}
-                      placeholder="Enter contributor token"
-                      className="flex-1 px-3 py-1.5 rounded-xl border border-[#DED6C4] bg-[#FAF8F5] text-[12.5px] font-mono focus:outline-none focus:border-[#157A4C]"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setStoredContributorToken(contributorTokenInput);
-                        setGatewayStatus('Token saved locally on this device.');
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white text-[12px] font-bold"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between pt-1">
-                  <button
-                    type="button"
-                    disabled={isTestingGateway}
-                    onClick={async () => {
-                      setIsTestingGateway(true);
-                      setGatewayStatus('Testing connection to gateway...');
-                      try {
-                        const ping = await pingGatewayPost(contributorTokenInput);
-                        if (ping.ok) {
-                          const userName = ping.data?.verifiedUser?.name || 'Verified Contributor';
-                          const userRole = ping.data?.verifiedUser?.role || 'contributor';
-                          setGatewayStatus(`Connected! Verified as ${userName} (${userRole}).`);
-                        } else {
-                          setGatewayStatus(`Gateway check: ${ping.error || 'Unauthorized'}`);
-                        }
-                      } catch (err: any) {
-                        setGatewayStatus(`Connection test error: ${err?.message || err}`);
-                      } finally {
-                        setIsTestingGateway(false);
-                      }
-                    }}
-                    className="text-[12px] font-bold text-[#1D6CE0] hover:underline flex items-center gap-1"
-                  >
-                    {isTestingGateway ? 'Testing connection...' : 'Test Gateway Connection'}
-                  </button>
-                  {contributorTokenInput && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setContributorTokenInput('');
-                        setStoredContributorToken('');
-                        setGatewayStatus('Contributor token removed from device.');
-                      }}
-                      className="text-[11px] font-semibold text-red-600 hover:underline"
-                    >
-                      Clear Token
-                    </button>
-                  )}
-                </div>
-                {gatewayStatus && (
-                  <p className="text-[11.5px] p-2 rounded-lg bg-[#F5F2EA] border border-[#E5DEC9] text-[#2C3830]">
-                    {gatewayStatus}
-                  </p>
-                )}
               </div>
             </div>
 

@@ -82,11 +82,33 @@ function generateSampleWav() {
     assert.equal(parsedWebm.base64, 'GkXfo59ChoEBQveBAULygQ8=');
   }
 
-  // Test 2: uploadRecordingToGateway requires contributor token
+  // Test 2: uploadRecordingToGateway supports automatic token-free upload
   {
     const storage = new Map(); // Empty token storage
-    const service = loadCloudService(() => {}, storage);
+    let capturedPayload = null;
+    const mockFetch = async (url, options) => {
+      capturedPayload = JSON.parse(options.body);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        url,
+        json: async () => ({
+          status: 'success',
+          duplicate: false,
+          action: 'upload_recording',
+          lessonId: capturedPayload.lessonId,
+          recordingId: capturedPayload.recordingId,
+          audioFileId: 'drive_auto_audio_123',
+          metadataFileId: 'drive_auto_meta_456',
+          recordingStatus: 'needs_spelling',
+          verified: true,
+          message: 'Saved automatically to Google Drive'
+        })
+      };
+    };
 
+    const service = loadCloudService(mockFetch, storage);
     const result = await service.uploadRecordingToGateway({
       lessonId: 'word-hand',
       english: 'Hand',
@@ -94,9 +116,10 @@ function generateSampleWav() {
       durationSec: 2
     });
 
-    assert.equal(result.ok, false);
-    assert.equal(result.errorCode, 'MISSING_TOKEN');
-    assert.match(result.message, /No contributor token/i);
+    assert.equal(result.ok, true);
+    assert.equal(result.audioFileId, 'drive_auto_audio_123');
+    assert.equal(capturedPayload.authToken, '', 'Empty string sent when no contributor token configured');
+    assert.equal(capturedPayload.action, 'upload_recording');
   }
 
   // Test 3: uploadRecordingToGateway verifies both audioFileId and metadataFileId
