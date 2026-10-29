@@ -22,12 +22,12 @@ export const INITIAL_EDO_ENTRIES: EdoEntry[] = [
     category: 'word',
     illustrationKey: 'hand',
     emoji: '🖐🏽',
-    hasAudio: true,
-    audioDurationSec: 3,
-    status: 'sample_entry',
+    hasAudio: false,
+    audioDurationSec: 0,
+    status: 'needs_audio',
     isSampleData: true,
     updatedAt: '2026-10-26T09:00:00Z',
-    notes: 'Sample prototype entry — can also be recorded fresh in Teach Edo'
+    notes: 'Sample prompt — needs genuine recorded Edo voice'
   },
   {
     id: 'word-eye',
@@ -36,12 +36,12 @@ export const INITIAL_EDO_ENTRIES: EdoEntry[] = [
     category: 'word',
     illustrationKey: 'eye',
     emoji: '👁️',
-    hasAudio: true,
-    audioDurationSec: 2,
-    status: 'sample_entry',
+    hasAudio: false,
+    audioDurationSec: 0,
+    status: 'needs_audio',
     isSampleData: true,
     updatedAt: '2026-10-26T09:05:00Z',
-    notes: 'Sample prototype entry (awaiting community verification)'
+    notes: 'Sample prompt — needs genuine recorded Edo voice'
   },
   {
     id: 'word-water',
@@ -50,12 +50,12 @@ export const INITIAL_EDO_ENTRIES: EdoEntry[] = [
     category: 'word',
     illustrationKey: 'water',
     emoji: '💧',
-    hasAudio: true,
-    audioDurationSec: 2,
-    status: 'sample_entry',
+    hasAudio: false,
+    audioDurationSec: 0,
+    status: 'needs_audio',
     isSampleData: true,
     updatedAt: '2026-10-26T09:10:00Z',
-    notes: 'Sample prototype entry (awaiting community verification)'
+    notes: 'Sample prompt — needs genuine recorded Edo voice'
   },
   {
     id: 'word-food',
@@ -64,12 +64,12 @@ export const INITIAL_EDO_ENTRIES: EdoEntry[] = [
     category: 'word',
     illustrationKey: 'food',
     emoji: '🍲',
-    hasAudio: true,
-    audioDurationSec: 3,
-    status: 'sample_entry',
+    hasAudio: false,
+    audioDurationSec: 0,
+    status: 'needs_audio',
     isSampleData: true,
     updatedAt: '2026-10-26T09:15:00Z',
-    notes: 'Sample prototype entry (awaiting community verification)'
+    notes: 'Sample prompt — needs genuine recorded Edo voice'
   },
   {
     id: 'word-house',
@@ -78,14 +78,14 @@ export const INITIAL_EDO_ENTRIES: EdoEntry[] = [
     category: 'word',
     illustrationKey: 'house',
     emoji: '🏠',
-    hasAudio: true,
-    audioDurationSec: 3,
-    status: 'sample_entry',
+    hasAudio: false,
+    audioDurationSec: 0,
+    status: 'needs_audio',
     isSampleData: true,
     updatedAt: '2026-10-26T09:20:00Z',
-    notes: 'Sample prototype entry (awaiting community verification)'
+    notes: 'Sample prompt — needs genuine recorded Edo voice'
   },
-  // Help Others primary example (matches Screen 7 in reference: "Good morning" with audio needing writing)
+  // Help Others primary example (matches Screen 7 in reference: "Good morning")
   {
     id: 'phrase-good-morning',
     english: 'Good morning',
@@ -93,12 +93,12 @@ export const INITIAL_EDO_ENTRIES: EdoEntry[] = [
     category: 'phrase',
     illustrationKey: 'sun',
     emoji: '🌅',
-    hasAudio: true,
-    audioDurationSec: 4,
-    status: 'needs_writing',
+    hasAudio: false,
+    audioDurationSec: 0,
+    status: 'unanswered',
     isSampleData: true,
     updatedAt: '2026-10-26T09:25:00Z',
-    notes: 'Voice recorded by community speaker — needs written Edo spelling'
+    notes: 'Prompt — needs voice recording and spelling'
   },
   // Help Others opposite case: Written contribution needing voice recording
   {
@@ -122,12 +122,12 @@ export const INITIAL_EDO_ENTRIES: EdoEntry[] = [
     category: 'phrase',
     illustrationKey: 'heart',
     emoji: '🙏🏽',
-    hasAudio: true,
-    audioDurationSec: 3,
-    status: 'needs_writing',
+    hasAudio: false,
+    audioDurationSec: 0,
+    status: 'unanswered',
     isSampleData: true,
     updatedAt: '2026-10-26T09:35:00Z',
-    notes: 'Voice recorded — needs written Edo spelling'
+    notes: 'Prompt — needs voice recording and spelling'
   },
   {
     id: 'word-child',
@@ -272,12 +272,52 @@ async function readLibrary(): Promise<LocalLibrary> {
 export async function loadLibrary(): Promise<LocalLibrary> {
   return transaction(async () => {
     const library = await readLibrary();
-    const ids = new Set(library.entries.map(entry => entry.id));
+
+    // 1. Purge synthetic test fixtures from local device cache
+    const isSyntheticTest = (e: EdoEntry) =>
+      Boolean(
+        e.id.toLowerCase().includes('test-') ||
+        (e.recordingId && e.recordingId.toLowerCase().includes('test-')) ||
+        e.english.toUpperCase().includes('SYNC VERIFICATION') ||
+        e.english.toUpperCase().includes('SYNC TEST') ||
+        (e.edoText && e.edoText.toUpperCase().includes('SYNC TEST'))
+      );
+
+    // 2. Sanitize unrecorded sample data: never show fake hasAudio without real bytes
+    const sanitizeEntry = (entry: EdoEntry): EdoEntry => {
+      if (entry.isSampleData && !entry.audioDataUrl && !entry.cloudAudioFileId && entry.hasAudio) {
+        return { ...entry, hasAudio: false, audioDurationSec: 0, status: 'needs_audio' };
+      }
+      return entry;
+    };
+
+    const cleanedEntries = library.entries.filter(e => !isSyntheticTest(e)).map(sanitizeEntry);
+    const cleanedRecordings = library.recordings.filter(r => !isSyntheticTest(r.originalLesson));
+    const cleanedQueue = library.syncQueue.filter(
+      item => !item.lessonId?.toLowerCase().includes('test-') && !item.id?.toLowerCase().includes('test-')
+    );
+
+    let changed =
+      cleanedEntries.length !== library.entries.length ||
+      cleanedRecordings.length !== library.recordings.length ||
+      cleanedQueue.length !== library.syncQueue.length;
+
+    const ids = new Set(cleanedEntries.map(entry => entry.id));
     const missing = INITIAL_EDO_ENTRIES.filter(entry => !ids.has(entry.id));
-    if (!missing.length) return library;
-    const extended = await protectEntries([...library.entries, ...missing], library);
-    await commitLibrary(extended);
-    return extended;
+
+    if (missing.length > 0 || changed) {
+      const sanitizedLib: LocalLibrary = {
+        ...library,
+        entries: [...cleanedEntries, ...missing],
+        recordings: cleanedRecordings,
+        syncQueue: cleanedQueue
+      };
+      const extended = await protectEntries(sanitizedLib.entries, sanitizedLib);
+      await commitLibrary(extended);
+      return extended;
+    }
+
+    return library;
   });
 }
 export async function loadEntries(): Promise<EdoEntry[]> { return (await loadLibrary()).entries; }

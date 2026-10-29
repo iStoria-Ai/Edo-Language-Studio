@@ -864,21 +864,20 @@ export interface PlayAudioOptions {
 }
 
 /**
- * Plays an audio recording from an Object URL or Data URL.
- * In real contributor recording flows, set `allowDemoFallback: false` so only real recorded
- * audio is played. Pre-seeded sample entries in the Library may use `allowDemoFallback: true`.
+ * Plays a real Edo human voice recording from an Object URL or Data URL.
+ * Never silently substitutes synthetic speech, electronic tones, or unrelated audio
+ * when a recording is missing.
  */
 export function playAudioRecording(
   audioSourceUrl: string | undefined,
   durationSec = 3,
   onProgress?: (currentSec: number, isPlaying: boolean) => void,
-  options: PlayAudioOptions = { allowDemoFallback: true }
+  options: PlayAudioOptions = { allowDemoFallback: false }
 ): () => void {
   stopActivePlayback();
   stopEnglishPrompt();
 
-  const allowDemo = options.allowDemoFallback !== false;
-  const playableUrl = audioSourceUrl || (allowDemo ? generatePlayableDemoWavDataUrl(durationSec) : '');
+  const playableUrl = (audioSourceUrl && typeof audioSourceUrl === 'string' && audioSourceUrl.trim()) || '';
 
   if (!playableUrl) {
     onProgress?.(0, false);

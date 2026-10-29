@@ -376,7 +376,7 @@ export async function uploadRecordingToGateway(
     durationSec: params.durationSec || 0,
     dialect: params.dialect || 'Standard Benin',
     permissions: {
-      playback: params.permissions?.playback === 'granted' ? 'granted' : 'denied',
+      playback: params.permissions?.playback !== 'denied' ? 'granted' : 'denied',
       aiVoiceTraining: params.permissions?.aiVoiceTraining === 'granted' ? 'granted' : 'denied'
     },
     recordedAt: new Date().toISOString()

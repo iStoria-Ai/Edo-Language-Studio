@@ -188,5 +188,26 @@ const shared = { id: 'cloud-rec-a', recordingId: 'rec-a', sourceLessonId: 'word-
   assert.equal(mergedWithTombstone.length, 1, 'Non-deleted items must be preserved');
   assert.equal(mergedWithTombstone[0].id, 'local-active');
 
-  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, automatic section progression, and tombstone purging.');
+  // Test Synthetic Test Rejection & Public Library Protection
+  const testEntry = {
+    id: 'test-crossdevice-20261029T103639',
+    recordingId: 'rec-339adb9ef74c1ff5ea3c4c851f09be8d0d246464a2e7a65337319cfed43acbb7',
+    english: 'SYNC VERIFICATION ONLY — this deliberately long phrase checks that every word wraps fully on small mobile Library cards and in the opened dialogue details',
+    edoText: 'SYNC TEST SPELLING — synthetic verification, not Edo vocabulary',
+    category: 'phrase',
+    hasAudio: true,
+    cloudAudioFileId: 'audio-test',
+    cloudMetadataFileId: 'meta-test',
+    isCommunity: true,
+    playbackPermission: 'granted',
+    status: 'awaiting_review',
+    isSampleData: false,
+    updatedAt: new Date().toISOString()
+  };
+  const mergedWithTest = a.api.mergeCommunityEntries([], [testEntry, shared]);
+  assert(!mergedWithTest.some(e => e.english.includes('SYNC VERIFICATION')), 'Synthetic test entries must never appear in merged community library');
+  assert.equal(mergedWithTest.length, 1);
+  assert.equal(mergedWithTest[0].recordingId, 'rec-a');
+
+  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, automatic section progression, tombstone purging, and synthetic test rejection.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

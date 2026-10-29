@@ -13,6 +13,17 @@ export interface CommunitySnapshot {
   checkedAt: string;
   tombstones?: string[];
 }
+
+function isSyntheticTest(entry: { id?: string; recordingId?: string; english?: string; edoText?: string }): boolean {
+  return Boolean(
+    (entry.id && entry.id.toLowerCase().includes('test-')) ||
+    (entry.recordingId && entry.recordingId.toLowerCase().includes('test-')) ||
+    (entry.english && entry.english.toUpperCase().includes('SYNC VERIFICATION')) ||
+    (entry.english && entry.english.toUpperCase().includes('SYNC TEST')) ||
+    (entry.edoText && entry.edoText.toUpperCase().includes('SYNC TEST'))
+  );
+}
+
 export async function communityRequest(payload: Record<string, unknown>) {
   const response = await fetch(getGatewayUrl(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ ...payload, authToken: getStoredContributorToken() }), redirect: 'follow', mode: 'cors', cache: 'no-store', signal: AbortSignal.timeout(30000) });
@@ -26,7 +37,8 @@ export async function readCommunityCache(): Promise<CommunitySnapshot | null> {
   if (!raw) return null;
   const snapshot = JSON.parse(raw);
   if (!Array.isArray(snapshot.entries) || !Array.isArray(snapshot.answeredQuestionIds)) throw new Error('Community cache is unreadable; original device recordings are unchanged.');
-  return snapshot;
+  const filtered = snapshot.entries.filter((entry: EdoEntry) => !isSyntheticTest(entry));
+  return { ...snapshot, entries: filtered };
 }
 export async function fetchCommunityLibrary(): Promise<CommunitySnapshot> {
   const data = await communityRequest({ action: 'get_library' });
@@ -36,8 +48,9 @@ export async function fetchCommunityLibrary(): Promise<CommunitySnapshot> {
     ['word', 'phrase', 'sentence'].includes(entry.category) && typeof entry.hasAudio === 'boolean' &&
     (!entry.hasAudio || typeof entry.cloudAudioFileId === 'string') && !entry.audioDataUrl)) throw new Error('The gateway returned an invalid shared Library. Cached content is preserved.');
   const tombstones = Array.isArray(data.tombstones) ? data.tombstones.filter((t: unknown) => typeof t === 'string') : [];
+  const cleanItems = (data.items as EdoEntry[]).filter(entry => !isSyntheticTest(entry));
   const snapshot: CommunitySnapshot = {
-    entries: data.items as EdoEntry[],
+    entries: cleanItems,
     answeredQuestionIds: data.answeredQuestionIds as string[],
     checkedAt: String(data.checkedAt),
     tombstones
@@ -57,11 +70,12 @@ export function mergeCommunityEntries(
   tombstones: string[] = []
 ): EdoEntry[] {
   const tombSet = new Set(tombstones);
-  const activeRemote = remote.filter(
-    entry => !tombSet.has(entry.recordingId || '') && !tombSet.has(entry.cloudMetadataFileId || '')
-  );
+  const activeRemote = remote
+    .filter(entry => !isSyntheticTest(entry))
+    .filter(entry => !tombSet.has(entry.recordingId || '') && !tombSet.has(entry.cloudMetadataFileId || ''));
   const remaining = new Map(activeRemote.map(entry => [entry.recordingId, entry]));
   const merged = local
+    .filter(entry => !isSyntheticTest(entry))
     .filter(entry => {
       if (entry.recordingId && tombSet.has(entry.recordingId)) return false;
       if (entry.cloudMetadataFileId && tombSet.has(entry.cloudMetadataFileId)) return false;
@@ -139,8 +153,8 @@ export async function uploadWrittenContribution(entry: EdoEntry): Promise<string
   return data.metadataFileId;
 }
 export async function getCommunityAudio(entry: EdoEntry): Promise<string> {
-  if (!entry.isCommunity && entry.audioDataUrl) return entry.audioDataUrl;
-  if (entry.playbackPermission !== 'granted') throw new Error('The speaker has not granted shared playback permission.');
+  if (entry.audioDataUrl && entry.audioDataUrl.startsWith('data:audio/')) return entry.audioDataUrl;
+  if (entry.playbackPermission === 'denied') throw new Error('The speaker has not granted shared playback permission.');
   if (!entry.cloudAudioFileId) throw new Error('This contribution has no shared audio.');
   const key = 'edo_community_audio_' + entry.cloudAudioFileId;
   if (typeof navigator !== 'undefined' && !navigator.onLine) {

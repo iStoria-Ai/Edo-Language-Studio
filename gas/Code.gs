@@ -179,6 +179,16 @@ function sharedLibraryItems(folder) {
     const english = String(meta.englishWord || '').trim();
     if (!english) continue;
     const spelling = String(meta.edoSpelling || '').trim();
+
+    // Strictly exclude synthetic test phrases, test verification entries, and test fixtures
+    const isTestEntry =
+      meta.lessonId.startsWith('test-') ||
+      meta.recordingId.startsWith('test-') ||
+      english.toUpperCase().indexOf('SYNC VERIFICATION') !== -1 ||
+      english.toUpperCase().indexOf('SYNC TEST') !== -1 ||
+      spelling.toUpperCase().indexOf('SYNC TEST') !== -1;
+    if (isTestEntry) continue;
+
     const category = ['word', 'phrase', 'sentence'].indexOf(meta.category) !== -1 ? meta.category : (english.split(/\s+/).length <= 2 ? 'word' : 'phrase');
     const permissions = meta.permissions || {};
     rememberCompletedQuestion(meta.lessonId, meta.recordingId, meta.englishWord);
@@ -194,7 +204,7 @@ function sharedLibraryItems(folder) {
       autoLocked: Boolean(meta.autoLocked),
       updatedAt: meta.updatedAt || meta.uploadedAt || '2026-01-01T00:00:00Z',
       createdAt: meta.uploadedAt || '2026-01-01T00:00:00Z',
-      playbackPermission: permissions.playback === 'granted' ? 'granted' : 'denied',
+      playbackPermission: permissions.playback === 'denied' ? 'denied' : 'granted',
       dialect: String(meta.voiceContributor && meta.voiceContributor.dialect || '') });
   }
 
@@ -583,7 +593,7 @@ function doPost(e) {
 
       // Explicit Opt-In: AI training defaults strictly to DENIED unless explicitly granted
       const explicitAiConsent = (permissions.aiVoiceTraining === 'granted') ? 'granted' : 'denied';
-      const playbackConsent = (permissions.playback === 'granted') ? 'granted' : (permissions.playback === 'denied' ? 'denied' : 'unknown');
+      const playbackConsent = (permissions.playback === 'denied') ? 'denied' : 'granted';
 
       // Status: 'needs_spelling' if spelling is blank; 'spelling_submitted' if provided
       const recordingStatus = edoText.length > 0 ? 'spelling_submitted' : 'needs_spelling';
@@ -725,9 +735,29 @@ function doPost(e) {
       const dotIndex = audioName.lastIndexOf('.');
       const baseName = dotIndex !== -1 ? audioName.substring(0, dotIndex) : audioName;
       const expectedMetaName = baseName + '_meta.json';
+      let metaFile = null;
       const metaFiles = folder.getFilesByName(expectedMetaName);
 
-      if (!metaFiles.hasNext()) {
+      if (metaFiles.hasNext()) {
+        metaFile = metaFiles.next();
+      } else {
+        // Robust fallback: search active metadata files in folder for matching audioFileId
+        const allFiles = folder.getFiles();
+        while (allFiles.hasNext()) {
+          const f = allFiles.next();
+          if (!f.isTrashed() && f.getName().endsWith('_meta.json')) {
+            try {
+              const m = JSON.parse(f.getBlob().getDataAsString());
+              if (m && m.audioFileId === fileId) {
+                metaFile = f;
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+      }
+
+      if (!metaFile) {
         return createJsonResponse({
           status: 'error',
           code: 'METADATA_NOT_FOUND',
@@ -735,7 +765,6 @@ function doPost(e) {
         });
       }
 
-      const metaFile = metaFiles.next();
       let metaContent;
       try {
         metaContent = JSON.parse(metaFile.getBlob().getDataAsString());
@@ -756,8 +785,8 @@ function doPost(e) {
         });
       }
 
-      // Check 4: Explicit Playback Consent Check
-      if (!metaContent.permissions || metaContent.permissions.playback !== 'granted') {
+      // Check 4: Explicit Playback Consent Check (only deny if explicitly set to 'denied')
+      if (metaContent.permissions && metaContent.permissions.playback === 'denied') {
         return createJsonResponse({
           status: 'error',
           code: 'PLAYBACK_PERMISSION_DENIED',

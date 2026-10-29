@@ -359,7 +359,7 @@ export const App: React.FC = () => {
     audioDataUrl: string,
     durationSec: number,
     edoText?: string,
-    playbackAllowed = false
+    playbackAllowed = true
   ) => {
     const existing = entries.find(item => item.id === entryId);
     if (existing?.audioDataUrl && !existing.isSampleData) throw new Error("This lesson already has a saved recording. Find it in the Language Library.");

@@ -40,21 +40,39 @@ export interface LanguageLibraryScreenProps {
 type LibraryFilter = 'all' | 'words' | 'phrases';
 
 /**
- * Requirement 3: Library must contain only completed lessons:
+ * Requirement: Library must contain only completed, verified lessons:
  * - English word or phrase
  * - Edo translation or spelling
- * - Valid saved voice recording
- * - Successfully synchronized online record (or sample/verified)
+ * - Valid real saved voice recording (local audioDataUrl or cloud audio)
+ * - Playback permission granted (never consent-denied or corrupted)
+ * - Excludes all synthetic test fixtures and prototype placeholders
  */
 export function isCompletedLesson(entry: EdoEntry): boolean {
   if (entry.status === 'unanswered' || entry.status === 'needs_writing' || entry.status === 'needs_audio') {
     return false;
   }
+  // Strictly exclude synthetic test phrases and verification fixtures
+  if (
+    entry.id.toLowerCase().includes('test-') ||
+    (entry.recordingId && entry.recordingId.toLowerCase().includes('test-')) ||
+    entry.english.toUpperCase().includes('SYNC VERIFICATION') ||
+    entry.english.toUpperCase().includes('SYNC TEST') ||
+    (entry.edoText && entry.edoText.toUpperCase().includes('SYNC TEST'))
+  ) {
+    return false;
+  }
   const hasEnglish = Boolean(entry.english && entry.english.trim());
   const hasEdo = Boolean(entry.edoText && entry.edoText.trim());
-  const hasAudio = Boolean(entry.hasAudio && (entry.audioDataUrl || entry.cloudAudioFileId || entry.isSampleData));
-  const isOnlineSynced = entry.syncStatus === 'synced_to_drive' || Boolean(entry.cloudMetadataFileId) || entry.isSampleData || Boolean(entry.audioDataUrl);
-  return Boolean(hasEnglish && hasEdo && hasAudio && isOnlineSynced);
+
+  // Real human voice audio must be present (not sample metadata without audio)
+  const hasValidLocalAudio = Boolean(entry.audioDataUrl && typeof entry.audioDataUrl === 'string' && entry.audioDataUrl.startsWith('data:audio/'));
+  const hasValidCloudAudio = Boolean(entry.cloudAudioFileId && entry.cloudAudioFileId.trim() && entry.playbackPermission !== 'denied');
+  const hasRealAudio = Boolean(entry.hasAudio && (hasValidLocalAudio || hasValidCloudAudio));
+
+  // Must be verified cloud record or valid local recording
+  const isOnlineSynced = (entry.syncStatus === 'synced_to_drive' && Boolean(entry.cloudMetadataFileId) && Boolean(entry.cloudAudioFileId) && entry.playbackPermission !== 'denied') || hasValidLocalAudio;
+
+  return Boolean(hasEnglish && hasEdo && hasRealAudio && isOnlineSynced);
 }
 
 export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
@@ -175,7 +193,8 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       }
     };
 
-    if (entry.audioDataUrl || entry.isSampleData) {
+    // Case 1: Local recorded audio bytes are present
+    if (entry.audioDataUrl && typeof entry.audioDataUrl === 'string' && entry.audioDataUrl.startsWith('data:audio/')) {
       setPlayingId(entry.id);
       trackPlayback();
       playAudioRecording(
@@ -185,14 +204,14 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           if (!playing) setPlayingId(null);
         },
         {
-          allowDemoFallback: entry.isSampleData,
+          allowDemoFallback: false,
           onError: () => setPlayingId(null)
         }
       );
       return;
     }
 
-    // Audio bytes were cleaned up after verified upload, stream from gateway
+    // Case 2: Audio was uploaded & verified in Google Drive; stream real audio from gateway
     if (entry.cloudAudioFileId) {
       setPlayingId(entry.id);
       try {
@@ -213,10 +232,15 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
             onError: () => setPlayingId(null)
           }
         );
-      } catch {
+      } catch (err) {
+        console.warn('Audio streaming failed:', err);
         setPlayingId(null);
       }
+      return;
     }
+
+    // Case 3: No real recording exists; do NOT substitute synthetic speech or beep tones
+    setPlayingId(null);
   };
 
   // Play audio in modal
@@ -493,6 +517,13 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
         {visibleEntries.map((entry) => {
           const isPlayingThis = playingId === entry.id;
           const isLocked = entry.reviewStatus === 'approved_locked';
+          const isVerifiedCloud = Boolean(
+            entry.cloudMetadataFileId &&
+            entry.cloudAudioFileId &&
+            entry.playbackPermission !== 'denied' &&
+            entry.syncStatus === 'synced_to_drive'
+          );
+          const isLocalOnly = Boolean(entry.audioDataUrl && !isVerifiedCloud);
 
           return (
             <div
@@ -522,9 +553,11 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                       <span title="Approved & Protected" className="inline-flex items-center">
                         <Lock className="w-3.5 h-3.5 text-[#157A4C] shrink-0" />
                       </span>
-                    ) : (
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] shrink-0" title="Verified online" />
-                    )}
+                    ) : isVerifiedCloud ? (
+                      <span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] shrink-0" title="Verified online with cloud recording" />
+                    ) : isLocalOnly ? (
+                      <span className="inline-block w-2 h-2 rounded-full bg-[#2563EB] shrink-0" title="Local recording waiting to synchronize" />
+                    ) : null}
                   </p>
                 </div>
               </div>
