@@ -10,6 +10,7 @@
  */
 
 import { digest } from './libraryProtection';
+import { recordingOwnerKey } from './recordingOwnership';
 import { EdoEntry } from '../types/edo';
 
 export const DEFAULT_GATEWAY_URL =
@@ -363,6 +364,7 @@ export async function uploadRecordingToGateway(
 
   const payload = {
     action: 'upload_recording',
+    ownerKey: await recordingOwnerKey(recordingId),
     authToken: token,
     lessonId,
     recordingId,
@@ -459,8 +461,6 @@ export async function uploadRecordingToGateway(
   }
 }
 
-// In-memory stream cache to avoid re-fetching audio on repeated playback
-const streamAudioCache = new Map<string, string>();
 
 /**
  * Retrieves and streams verified private audio data URL from Google Drive through the Gateway.
@@ -474,9 +474,7 @@ export async function streamAudioFromGateway(
   const cleanId = (fileId || '').trim();
   if (!cleanId) return { ok: false, error: 'Missing audio file ID' };
 
-  if (streamAudioCache.has(cleanId)) {
-    return { ok: true, audioDataUrl: streamAudioCache.get(cleanId) };
-  }
+  // Always validate current playback permission with the gateway when online.
 
   try {
     const payload = {
@@ -499,7 +497,6 @@ export async function streamAudioFromGateway(
 
     const data = await response.json();
     if (data.status === 'success' && data.audioDataUrl) {
-      streamAudioCache.set(cleanId, data.audioDataUrl);
       return { ok: true, audioDataUrl: data.audioDataUrl };
     }
 
@@ -601,6 +598,70 @@ export async function submitSpellingToGateway(params: {
   }
 }
 
+export async function adminLockEntry(
+  metadataFileId: string,
+  adminToken: string,
+  url = getGatewayUrl()
+): Promise<{ ok: boolean; status: string; message: string }> {
+  try {
+    const payload = {
+      action: 'admin_lock_entry',
+      authToken: adminToken,
+      metadataFileId: metadataFileId
+    };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      mode: 'cors'
+    });
+    if (!response.ok) {
+      return { ok: false, status: 'error', message: `Gateway HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    return {
+      ok: data.status === 'success',
+      status: data.status,
+      message: data.message || (data.status === 'success' ? 'Lesson approved and locked successfully' : 'Failed to lock lesson')
+    };
+  } catch (err: any) {
+    return { ok: false, status: 'error', message: String(err?.message || err) };
+  }
+}
+
+export async function adminUnlockEntry(
+  metadataFileId: string,
+  adminToken: string,
+  url = getGatewayUrl()
+): Promise<{ ok: boolean; status: string; message: string }> {
+  try {
+    const payload = {
+      action: 'admin_unlock_entry',
+      authToken: adminToken,
+      metadataFileId: metadataFileId
+    };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      mode: 'cors'
+    });
+    if (!response.ok) {
+      return { ok: false, status: 'error', message: `Gateway HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    return {
+      ok: data.status === 'success',
+      status: data.status,
+      message: data.message || (data.status === 'success' ? 'Lesson unlocked successfully' : 'Failed to unlock lesson')
+    };
+  } catch (err: any) {
+    return { ok: false, status: 'error', message: String(err?.message || err) };
+  }
+}
+
 export interface QueuedUpload {
   lessonId: string;
   enqueuedAt: string;
@@ -661,7 +722,8 @@ export async function processBackgroundUploadQueue(
   getCurrentEntries: () => EdoEntry[],
   onEntrySyncedAndVerified: (entryId: string, cloudAudioId: string, cloudMetaId: string) => Promise<void>,
   onEntryUploadFailed: (entryId: string, errorMsg: string) => Promise<void>,
-  onEntryStatusChange?: (entryId: string, status: EdoEntry['syncStatus']) => void
+  onEntryStatusChange?: (entryId: string, status: EdoEntry['syncStatus']) => void,
+  getRecordingPermissions?: (entry: EdoEntry) => Promise<UploadRecordingParams['permissions']>
 ): Promise<void> {
   if (isProcessingUploadQueue) return;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return;
@@ -708,7 +770,8 @@ export async function processBackgroundUploadQueue(
         edoText: entry.edoText || '',
         audioDataUrl: entry.audioDataUrl,
         durationSec: entry.audioDurationSec || 0,
-        authToken: token
+        authToken: token,
+        permissions: await getRecordingPermissions?.(entry)
       });
 
       if (!uploadResult.ok || !uploadResult.audioFileId || !uploadResult.metadataFileId) {

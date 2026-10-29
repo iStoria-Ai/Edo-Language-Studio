@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { PermissionDecision, ProtectedRecording } from '../services/libraryProtection';
+import { updateOwnedRecordingPermissions } from '../services/communityLibrary';
 import { saveRecordingInformation } from '../services/storageService';
 
 export function RecordingInformation({ recording, onSaved }: { recording: ProtectedRecording; onSaved: () => Promise<void> }) {
@@ -18,7 +19,7 @@ export function RecordingInformation({ recording, onSaved }: { recording: Protec
       <input id="recording-speaker" className="edo-input" value={name} maxLength={200} onChange={event => setName(event.target.value)} placeholder="Unknown speaker" />
       <label htmlFor="recording-dialect">Dialect or variety (optional)</label>
       <input id="recording-dialect" className="edo-input" value={dialect} maxLength={200} onChange={event => setDialect(event.target.value)} />
-      <label htmlFor="permission-playback">Permission for future shared-library playback</label>
+      <label htmlFor="permission-playback">Permission for shared-library playback</label>
       <select id="permission-playback" className="edo-input" value={playback} onChange={event => setPlayback(event.target.value as PermissionDecision)}>
         <option value="unknown">Not recorded</option><option value="granted">Speaker permits shared-library playback</option><option value="denied">Speaker does not permit shared-library playback</option>
       </select>
@@ -26,13 +27,14 @@ export function RecordingInformation({ recording, onSaved }: { recording: Protec
       <select id="permission-training" className="edo-input" value={training} onChange={event => setTraining(event.target.value as PermissionDecision)}>
         <option value="unknown">Not recorded — do not train</option><option value="granted">Speaker permits future AI voice training</option><option value="denied">Speaker does not permit AI voice training</option>
       </select>
-      <p className="text-xs text-[#56625A]">Record only the speaker’s actual permission. These are separate choices; permission for playback does not grant training permission. Your local preview stays available. Existing audio stays on this device. No training or cloud sharing occurs.</p>
+      <p className="text-xs text-[#56625A]">Record only the speaker’s actual permission. These are separate choices; permission for playback does not grant training permission. Your local preview stays available. Existing audio stays on this device. Playback is shared only after you grant permission and the gateway confirms it. AI training remains a separate choice.</p>
       <button type="button" disabled={busy} className="edo-secondary-btn" onClick={async () => {
         if (lock.current) return;
         lock.current = true; setBusy(true); setNotice('');
         try {
           await saveRecordingInformation(recording.id, { ...recording.speaker, name: name.trim(), dialect: dialect.trim() }, { ...recording.permissions, playback, aiVoiceTraining: training });
-          await onSaved(); setNotice('Speaker information and permissions saved. Original audio is unchanged.');
+          if (recording.originalLesson.cloudMetadataFileId) await updateOwnedRecordingPermissions(recording.id, recording.originalLesson.cloudMetadataFileId, { playback, aiVoiceTraining: training });
+          await onSaved(); setNotice('Speaker details saved locally; any authorized Drive permission update is confirmed. Original audio is unchanged.');
         } catch (error) { setNotice(error instanceof Error ? error.message : 'Unable to save.'); }
         finally { lock.current = false; setBusy(false); }
       }}>Save speaker &amp; permissions</button>

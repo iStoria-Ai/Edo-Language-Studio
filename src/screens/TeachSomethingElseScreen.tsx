@@ -23,6 +23,7 @@ interface TeachSomethingElseScreenProps {
     edoText: string;
     audioDataUrl?: string;
     audioDurationSec?: number;
+    playbackAllowed?: boolean;
   }) => Promise<void>;
   onClose: () => void;
 }
@@ -35,6 +36,7 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
 }) => {
   const [englishOrMainText, setEnglishOrMainText] = useState('');
   const [optionalEdoSpelling, setOptionalEdoSpelling] = useState('');
+  const [playbackAllowed, setPlaybackAllowed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const [audioDataUrl, setAudioDataUrl] = useState<string | undefined>(undefined);
@@ -135,7 +137,8 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
       englishText: trimmedMain || 'Community spoken phrase',
       edoText: trimmedEdo,
       audioDataUrl,
-      audioDurationSec: audioDataUrl ? audioDuration : undefined
+      audioDurationSec: audioDataUrl ? audioDuration : undefined,
+      playbackAllowed
     }); } catch (error) { setSavedNotice(String(error)); return; }
 
     const statusMsg =
@@ -254,6 +257,7 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
           )}
         </div>
 
+        {audioDataUrl && <label className="flex items-start gap-2 text-sm leading-snug"><input type="checkbox" checked={playbackAllowed} onChange={event => setPlaybackAllowed(event.target.checked)} />I am the speaker and permit other users to listen in the shared Library. This does not permit AI voice training.</label>}
         {/* Bottom Microphone + Send Layout */}
         <div className="pt-3">
           <div className="text-center text-[14px] font-bold text-[#525E55] mb-2.5">

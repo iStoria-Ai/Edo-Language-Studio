@@ -31,7 +31,7 @@ export function LibraryBackupTools({ queueCount, recordingCount, onLibraryChange
   return <details className="mx-5 my-2 rounded-xl border border-[#DED6C4] bg-white px-3 py-2 shrink-0 text-sm">
     <summary className="cursor-pointer font-bold text-[#157A4C]">Library backups &amp; recording permissions</summary>
     <div className="mt-2 space-y-2 max-h-[40dvh] overflow-y-auto">
-      <p>{recordingCount} protected recordings · {queueCount} pending local operations. Google Drive upload status is shown on each lesson.</p>
+      <p>{recordingCount} protected recordings · {queueCount} protected local history entries. Google Drive upload status is shown on each lesson.</p>
       <p className="text-xs text-[#56625A]">Backups include original audio, speaker information, and permissions. Files are not encrypted; keep your backup private. Recordings are saved locally and queued for Google Drive sync.</p>
       <div className="flex gap-2">
         <button disabled={busy} type="button" className="edo-secondary-btn flex-1" onClick={() => void run(async () => {

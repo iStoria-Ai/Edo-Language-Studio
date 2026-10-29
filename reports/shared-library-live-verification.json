@@ -1,0 +1,13 @@
+{
+  "test": "Two isolated browsers (in-app browser A and Chrome B), labelled synthetic audio",
+  "status": "passed",
+  "recordingId": "rec-339adb9ef74c1ff5ea3c4c851f09be8d0d246464a2e7a65337319cfed43acbb7",
+  "audioFileId": "12PfZitT-ukWoy4B2YerpnDpDj5Exwew-",
+  "metadataFileId": "1YxscWJxNPFCPcnvEh5hkop3PeSHRbBVB",
+  "uploadConfirmed": true,
+  "permittedPlaybackBytesMatch": true,
+  "spellingRoundTripConfirmed": true,
+  "sharedRecordCount": 15,
+  "existingRecordsWithoutPlaybackConsent": 14,
+  "originalCloudDataDeleted": false
+}

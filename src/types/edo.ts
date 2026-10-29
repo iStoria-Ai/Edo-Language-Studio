@@ -35,6 +35,14 @@ export type CloudSyncStatus =
   | 'upload_failed';
 
 export interface EdoEntry {
+  sourceLessonId?: string;
+  isCommunity?: boolean;
+  playbackPermission?: 'granted' | 'denied' | 'unknown';
+  spellingSyncStatus?: 'pending' | 'conflict';
+  spellingSyncError?: string;
+  reviewStatus?: 'pending_approval' | 'approved_locked';
+  approvedBy?: { id: string; name: string; approvedAt: string };
+  dialect?: string;
   id: string;
   english: string;
   edoText?: string;

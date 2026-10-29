@@ -1,0 +1,5 @@
+{
+  "status": "error",
+  "code": "SERVER_BUSY",
+  "message": "Server is processing another record. Please retry shortly."
+}

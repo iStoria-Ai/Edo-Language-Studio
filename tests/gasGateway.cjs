@@ -147,6 +147,8 @@ function runTests() {
 
   // Mock Utilities
   const utilities = {
+    DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
+    computeDigest: (algorithm, text) => Array.from(require('node:crypto').createHash('sha256').update(text).digest()),
     base64Decode: (b64) => {
       if (!/^[A-Za-z0-9+/=]+$/.test(b64.trim())) {
         throw new Error('Invalid base64 string');
@@ -164,6 +166,7 @@ function runTests() {
   // Mock LockService
   const lockService = {
     getScriptLock: () => ({
+      hasLock: () => false,
       waitLock: () => true,
       releaseLock: () => true
     })
@@ -197,6 +200,12 @@ function runTests() {
     LockService: lockService,
     Utilities: utilities,
     ContentService: contentService,
+    HtmlService: {
+      createHtmlOutput: (html) => ({
+        getContent: () => html,
+        setTitle: function() { return this; }
+      })
+    },
     Logger: logger,
     console: console
   };
@@ -330,6 +339,25 @@ function runTests() {
   assert.equal(conflictRes.code, 'SPELLING_ALREADY_SUBMITTED');
   console.log('✓ Second spelling submission safely rejected with SPELLING_ALREADY_SUBMITTED.');
 
+  const libraryRequest = () => JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'get_library' }) } }).getContent());
+  const shared = libraryRequest();
+  assert.equal(shared.status, 'success');
+  assert.equal(shared.items.length, 2);
+  assert(shared.items.some(entry => entry.recordingId === 'rec-food-001' && entry.edoText === 'Evbare'));
+  assert(shared.answeredQuestionIds.includes('word-water'));
+  assert(shared.items.every(entry => !('ownerKeyHash' in entry) && !('authToken' in entry) && !('voiceContributor' in entry)));
+  const ownerKey = 'a'.repeat(64);
+  const ownedPayload = { ...communityPayload, lessonId: 'custom-owner-test', recordingId: 'rec-owned-test', ownerKey };
+  const owned = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify(ownedPayload) } }).getContent());
+  const changePermissions = key => JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'update_recording_permissions', metadataFileId: owned.metadataFileId, ownerKey: key, permissions: { playback: 'denied', aiVoiceTraining: 'denied' } }) } }).getContent());
+  assert.equal(changePermissions('b'.repeat(64)).code, 'OWNER_REQUIRED');
+  assert.equal(changePermissions(ownerKey).status, 'success');
+  assert.equal(libraryRequest().items.find(entry => entry.recordingId === 'rec-owned-test').playbackPermission, 'denied');
+  driveApp.getFileById(owned.audioFileId).setTrashed(true);
+  driveApp.getFileById(owned.metadataFileId).setTrashed(true);
+  const repeatedSpelling = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'submit_spelling', metadataFileId: needsSpellingRes.metadataFileId, edoSpelling: 'Evbare' }) } }).getContent());
+  assert.equal(repeatedSpelling.status, 'success', 'Offline spelling retry must be idempotent');
+
   // Live collection totals must fall when files are deleted outside the app.
   const readStats = () => JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'get_collection_stats' }) } }).getContent());
   const beforeDelete = readStats();
@@ -345,6 +373,9 @@ function runTests() {
   driveApp.getFileById(needsSpellingRes.metadataFileId).setTrashed(true);
   assert.equal(readStats().stats.totalContributions, 0, 'Missing metadata must not count');
   for (const file of files.values()) file.setTrashed(true);
+  const ledgerAfterDelete = libraryRequest();
+  assert.equal(ledgerAfterDelete.items.length, 0);
+  assert(ledgerAfterDelete.answeredQuestionIds.includes('word-water'), 'Deleting audio must not reopen an answered question');
   const emptyStats = readStats().stats;
   for (const key of Object.keys(emptyStats)) assert.equal(emptyStats[key], 0, `An emptied Drive must reset ${key}`);
   const folder = driveApp.getFolderById(TARGET_FOLDER_ID);
@@ -390,6 +421,80 @@ function runTests() {
   }).getContent());
   assert.equal(registeredRes.status, 'success', 'Registered token is not blocked by community rate limit');
   console.log('✓ Registered speaker token successfully bypasses community rate limiter.');
+
+  // 11. Administrator Approval & Locking System
+  console.log('--- Step 11: Testing Administrator Approval & Locking System ---');
+  // Reset rate limit key so community test can upload
+  cacheStore.delete('rate_community_uploads_' + currentWindow);
+  const uploadForLock = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'word-locktest',
+      recordingId: 'rec-lock-001',
+      english: 'Lock Test',
+      edoText: 'Igho',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav'
+    }) }
+  }).getContent());
+  assert.equal(uploadForLock.status, 'success');
+  const targetMetaFileId = uploadForLock.metadataFileId;
+
+  // Non-admin attempting to lock must be rejected
+  const nonAdminLock = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_lock_entry',
+      authToken: speakerToken, // speaker, not admin
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(nonAdminLock.code, 'UNAUTHORIZED_ADMIN');
+
+  // Admin locking the entry succeeds
+  const adminLock = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_lock_entry',
+      authToken: adminToken, // verified admin
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(adminLock.status, 'success');
+  assert.equal(adminLock.reviewStatus, 'approved_locked');
+  assert.equal(adminLock.approvedBy.name, 'Project Lead');
+  console.log('✓ Admin successfully locked and approved entry (status: approved_locked).');
+
+  // Verify that subsequent community attempt to modify or overwrite locked entry is rejected with ENTRY_LOCKED
+  const lockedUploadAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'word-locktest',
+      recordingId: 'rec-lock-001',
+      english: 'Lock Test Tampered',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav'
+    }) }
+  }).getContent());
+  assert.equal(lockedUploadAttempt.code, 'ENTRY_LOCKED');
+  console.log('✓ Modification of locked entry correctly blocked with ENTRY_LOCKED.');
+
+  // Admin unlocking the entry succeeds
+  const adminUnlock = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_unlock_entry',
+      authToken: adminToken,
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(adminUnlock.status, 'success');
+  assert.equal(adminUnlock.reviewStatus, 'pending_approval');
+  console.log('✓ Admin successfully unlocked entry.');
+
+  // Test doGet admin dashboard
+  const adminViewGet = sandbox.doGet({ parameter: { admin_token: adminToken } });
+  assert.ok(adminViewGet.getContent().includes('Edo Language Studio — Administrator Approvals'));
+  console.log('✓ Admin dashboard HTML rendered successfully for authorized admin token.');
 
   console.log('\n=== ALL AUTOMATED TESTS ON gas/Code.gs PASSED! ===');
 }

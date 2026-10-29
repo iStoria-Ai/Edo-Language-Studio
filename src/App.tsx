@@ -28,10 +28,12 @@ import {
   saveEntries,
   saveAudioFileLocally,
   resetToDefaultData,
+  saveRecordingInformation,
   computeStudioStats,
   INITIAL_EDO_ENTRIES,
   TEACH_QUESTION_IDS
 } from './services/storageService';
+import { fetchCommunityLibrary, readCommunityCache, mergeCommunityEntries, readSpellingDrafts, queueCommunitySpelling, syncSpellingDrafts, uploadWrittenContribution, CommunitySnapshot } from './services/communityLibrary';
 import { LocalLibrary } from './services/libraryProtection';
 import { SCREEN_BADGE_MAP } from './components/ScreenBadgeHeader';
 import {
@@ -63,8 +65,74 @@ export const App: React.FC = () => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [showSystemModal, setShowSystemModal] = useState(false);
 
+  const [community, setCommunity] = useState<CommunitySnapshot | null>(null);
+  const [communityError, setCommunityError] = useState('');
+  const [communityBusy, setCommunityBusy] = useState(false);
+  const [spellingDrafts, setSpellingDrafts] = useState<Awaited<ReturnType<typeof readSpellingDrafts>>>([]);
+  const communityInFlight = useRef(false);
+  const sharedEntries = mergeCommunityEntries(entries, community?.entries || [], spellingDrafts);
+  async function refreshCommunity() {
+    if (communityInFlight.current) return;
+    communityInFlight.current = true;
+    setCommunityBusy(true);
+    try {
+      const cached = await readCommunityCache();
+      if (cached) setCommunity(cached);
+      setSpellingDrafts(await readSpellingDrafts());
+      if (!navigator.onLine) { setCommunityError('Offline — showing previously cached community contributions. Pending work stays on this device.'); return; }
+      let snapshot = await fetchCommunityLibrary();
+      let changedOnline = false;
+      let queuedAudio = false;
+      const local = await loadLibrary();
+      // Old local spellings belong to their original metadata, never a new recording.
+      for (const entry of local.entries) {
+        if (!entry.isSampleData && entry.hasAudio && entry.audioDataUrl && entry.syncStatus !== 'synced_to_drive') { enqueueForBackgroundUpload(entry.id); queuedAudio = true; }
+        const remote = snapshot.entries.find(item => item.recordingId === entry.recordingId || item.cloudMetadataFileId === entry.cloudMetadataFileId);
+        if (remote?.cloudMetadataFileId && !remote.edoText && entry.edoText?.trim()) { await queueCommunitySpelling(remote.cloudMetadataFileId, entry.edoText); changedOnline = true; }
+        if (!entry.isSampleData && !entry.hasAudio && entry.edoText?.trim() && !entry.cloudMetadataFileId) {
+          const metadataId = await uploadWrittenContribution(entry);
+          changedOnline = true;
+          const latest = await loadLibrary();
+          await saveEntries(latest.entries.map(item => item.id === entry.id ? { ...item, cloudMetadataFileId: metadataId, syncStatus: 'synced_to_drive' as const } : item), latest.entries);
+        }
+      }
+      if ((await readSpellingDrafts()).some(draft => !draft.error)) changedOnline = true;
+      if (queuedAudio) triggerBackgroundWorker();
+      await syncSpellingDrafts();
+      if (changedOnline) snapshot = await fetchCommunityLibrary();
+      setCommunity(snapshot);
+      setSpellingDrafts(await readSpellingDrafts());
+      await refreshLibrary();
+      setCommunityError('');
+    } catch (error) { setCommunityError(error instanceof Error ? error.message : 'Community Library sync failed. Local recordings are preserved.'); }
+    finally { communityInFlight.current = false; setCommunityBusy(false); }
+  }
+  async function saveSharedSpelling(entryId: string, text: string) {
+    const entry = sharedEntries.find(item => item.id === entryId);
+    if (entry?.cloudMetadataFileId) {
+      if (entry.edoText?.trim() && entry.edoText.trim() !== text.trim() && !entry.spellingSyncStatus) throw new Error('An Edo spelling already exists online. It has been preserved; public users cannot replace it.');
+      await queueCommunitySpelling(entry.cloudMetadataFileId, text);
+      setSpellingDrafts(await readSpellingDrafts());
+      await refreshCommunity();
+      return;
+    }
+    await handleAttachWritingToEntry(entryId, text);
+  }
+  useEffect(() => {
+    if (!isLoaded) return;
+    void refreshCommunity();
+    const refresh = () => { if (document.visibilityState !== 'hidden') void refreshCommunity(); };
+    const timer = window.setInterval(refresh, 30000);
+    window.addEventListener('online', refresh);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener('online', refresh); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
+  }, [isLoaded, activeSection]);
+
   useEffect(() => {
     loadLibrary().then((loaded) => {
+      // Safely migrate unsynchronized local recordings into the existing idempotent upload queue.
+      for (const entry of loaded.entries) if (!entry.isSampleData && entry.audioDataUrl && entry.syncStatus !== 'synced_to_drive') enqueueForBackgroundUpload(entry.id);
       setLibraryInfo(loaded);
       setEntries(loaded.entries);
       setIsLoaded(true);
@@ -203,6 +271,7 @@ export const App: React.FC = () => {
           });
           await saveEntries(updated, library.entries);
           await refreshLibrary();
+          void refreshCommunity();
         },
         async (entryId, errorMsg) => {
           // Failure: KEEP local audio intact, record error
@@ -221,7 +290,8 @@ export const App: React.FC = () => {
         },
         (entryId, status) => {
           setEntries(prev => prev.map(item => item.id === entryId ? { ...item, syncStatus: status } : item));
-        }
+        },
+        async entry => (await loadLibrary()).recordings.find(recording => recording.id === entry.recordingId)?.permissions
       ).catch(err => {
         console.warn('Background upload worker error:', err);
       });
@@ -246,7 +316,8 @@ export const App: React.FC = () => {
     entryId: string,
     audioDataUrl: string,
     durationSec: number,
-    edoText?: string
+    edoText?: string,
+    playbackAllowed = false
   ) => {
     const existing = entries.find(item => item.id === entryId);
     if (existing?.audioDataUrl && !existing.isSampleData) throw new Error("This lesson already has a saved recording. Find it in the Language Library.");
@@ -280,6 +351,10 @@ export const App: React.FC = () => {
     const updated = entries.map((item) => (item.id === entryId ? entryToSave : item));
     await persistUpdatedEntries(updated);
 
+    const savedLibrary = await loadLibrary();
+    const savedRecording = savedLibrary.recordings.find(recording => recording.originalLesson.id === entryId);
+    if (savedRecording) await saveRecordingInformation(savedRecording.id, savedRecording.speaker, { ...savedRecording.permissions, playback: playbackAllowed ? 'granted' : 'denied' });
+
     // 3. Enqueue for background upload and trigger worker asynchronously (NON-BLOCKING)
     enqueueForBackgroundUpload(entryId);
     triggerBackgroundWorker();
@@ -305,6 +380,38 @@ export const App: React.FC = () => {
       };
     });
     await persistUpdatedEntries(updated);
+  };
+
+  const handleUpdateLibraryEntry = async (
+    entryId: string,
+    updates: { english?: string; edoText?: string; audioDataUrl?: string; durationSec?: number }
+  ) => {
+    let persistedAudioUri = updates.audioDataUrl;
+    if (updates.audioDataUrl && updates.audioDataUrl.startsWith('data:')) {
+      persistedAudioUri = await saveAudioFileLocally(entryId, updates.audioDataUrl);
+    }
+    const updatedEntries = entries.map(item => {
+      if (item.id !== entryId) return item;
+      return {
+        ...item,
+        english: updates.english !== undefined ? updates.english.trim() : item.english,
+        edoText: updates.edoText !== undefined ? updates.edoText.trim() : item.edoText,
+        hasAudio: Boolean(persistedAudioUri) || item.hasAudio,
+        audioDataUrl: persistedAudioUri || item.audioDataUrl,
+        audioDurationSec: updates.durationSec || item.audioDurationSec,
+        syncStatus: persistedAudioUri ? ('pending_upload' as const) : item.syncStatus,
+        updatedAt: new Date().toISOString()
+      };
+    });
+    await persistUpdatedEntries(updatedEntries);
+    if (persistedAudioUri) {
+      enqueueForBackgroundUpload(entryId);
+      triggerBackgroundWorker();
+    } else if (updates.edoText !== undefined) {
+      await saveSharedSpelling(entryId, updates.edoText);
+    }
+    await refreshLibrary();
+    void refreshCommunity();
   };
 
   // Skip Writing in Teach Edo -> Keep Voice as "Needs Writing" (Screen 5 -> Screen 6)
@@ -339,22 +446,19 @@ export const App: React.FC = () => {
     });
     await persistUpdatedEntries(updated);
 
-    // If already stored in Google Drive, submit spelling to update companion metadata
     if (existing?.cloudMetadataFileId) {
-      submitSpellingToGateway({
-        metadataFileId: existing.cloudMetadataFileId,
-        edoSpelling: edoText
-      }).catch(err => {
-        console.warn('Could not sync spelling to Google Drive:', err);
-      });
+      await queueCommunitySpelling(existing.cloudMetadataFileId, edoText);
+      void refreshCommunity();
     }
+
   };
 
   // Help Others: Attach voice recording to an existing written contribution — Fast & Non-Blocking
   const handleAttachAudioToEntry = async (
     entryId: string,
     audioDataUrl: string,
-    durationSec: number
+    durationSec: number,
+    playbackAllowed = false
   ) => {
     const persistedUri = await saveAudioFileLocally(entryId, audioDataUrl);
     const existing = entries.find(item => item.id === entryId);
@@ -376,6 +480,9 @@ export const App: React.FC = () => {
     const updated = entries.map((item) => (item.id === entryId ? entryToSave : item));
     await persistUpdatedEntries(updated);
 
+    const saved = await loadLibrary();
+    const recording = saved.recordings.find(item => item.originalLesson.id === entryId);
+    if (recording) await saveRecordingInformation(recording.id, recording.speaker, { ...recording.permissions, playback: playbackAllowed ? 'granted' : 'denied' });
     enqueueForBackgroundUpload(entryId);
     triggerBackgroundWorker();
   };
@@ -386,6 +493,7 @@ export const App: React.FC = () => {
     edoText: string;
     audioDataUrl?: string;
     audioDurationSec?: number;
+    playbackAllowed?: boolean;
   }) => {
     if (entries.some(item => item.english.trim().toLowerCase() === params.englishText.trim().toLowerCase() && !item.isSampleData && (item.audioDataUrl || item.edoText))) {
       throw new Error("This English lesson already exists. Edit it in the Language Library.");
@@ -427,6 +535,13 @@ export const App: React.FC = () => {
     };
 
     await persistUpdatedEntries([newEntry, ...entries]);
+    if (hasVoice) {
+      const saved = await loadLibrary();
+      const recording = saved.recordings.find(item => item.originalLesson.id === newId);
+      if (recording) await saveRecordingInformation(recording.id, recording.speaker, { ...recording.permissions, playback: params.playbackAllowed ? 'granted' : 'denied' });
+      enqueueForBackgroundUpload(newId);
+      triggerBackgroundWorker();
+    } else void refreshCommunity();
   };
 
   const handleResetData = async () => {
@@ -475,27 +590,31 @@ export const App: React.FC = () => {
       case 'help':
         return (
           <HelpOthersScreen
-            entries={entries}
-            onAttachWritingToEntry={handleAttachWritingToEntry}
-            onAttachAudioToEntry={handleAttachAudioToEntry}
+            entries={sharedEntries}
+            onAttachWritingToEntry={saveSharedSpelling}
+            onAttachAudioToEntry={async (id, audioDataUrl, audioDurationSec, playbackAllowed) => {
+              const shared = sharedEntries.find(entry => entry.id === id && entry.isCommunity);
+              if (shared) await handleSaveCustomContribution({ englishText: shared.english, edoText: shared.edoText || '', audioDataUrl, audioDurationSec, playbackAllowed });
+              else await handleAttachAudioToEntry(id, audioDataUrl, audioDurationSec, playbackAllowed);
+            }}
             onBackToDashboard={() => setActiveSection('dashboard')}
           />
         );
       case 'library':
         return (
           <LanguageLibraryScreen
-            entries={entries}
+            entries={sharedEntries}
+            onCommunitySync={async () => { triggerBackgroundWorker(); await refreshCommunity(); }}
+            communityBusy={communityBusy}
+            communityError={communityError}
+            communityCheckedAt={community?.checkedAt}
+            pendingSpellingCount={spellingDrafts.length}
             onBackToDashboard={() => setActiveSection('dashboard')}
             recordings={libraryInfo?.recordings || []}
             queueCount={libraryInfo?.syncQueue.length || 0}
-            onLibraryChanged={refreshLibrary}
-            onEditText={async (id, text) => {
-              await persistUpdatedEntries(entries.map(entry => entry.id === id ? {
-                ...entry, edoText: text.trim() || undefined,
-                status: entry.audioDataUrl ? (text.trim() ? 'awaiting_review' : 'needs_writing') : 'needs_audio',
-                updatedAt: new Date().toISOString()
-              } : entry));
-            }}
+            onLibraryChanged={async () => { await refreshLibrary(); void refreshCommunity(); }}
+            onEditText={saveSharedSpelling}
+            onSaveEntry={handleUpdateLibraryEntry}
             onDeleteLesson={async id => {
               const prompt = INITIAL_EDO_ENTRIES.find(entry => entry.id === id);
               await persistUpdatedEntries(prompt ? entries.map(entry => entry.id === id ? {

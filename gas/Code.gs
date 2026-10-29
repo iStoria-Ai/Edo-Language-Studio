@@ -74,10 +74,10 @@ function getVerifiedContributor(providedToken, action) {
   }
 
   // If token is invalid or omitted, check if action permits community contributor access
-  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling', 'get_collection_stats'];
+  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling', 'get_collection_stats', 'get_library', 'get_question_state', 'upsert_text_contribution', 'update_recording_permissions'];
   if (communityAllowedActions.indexOf(action) !== -1) {
     // Enforce rate limiting for community uploads via CacheService
-    if (action === 'upload_recording') {
+    if (['upload_recording', 'submit_spelling', 'upsert_text_contribution'].indexOf(action) !== -1) {
       const cache = CacheService.getScriptCache();
       const currentWindow = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_SEC * 1000));
       const cacheKey = 'rate_community_uploads_' + currentWindow;
@@ -103,6 +103,77 @@ function getVerifiedContributor(providedToken, action) {
   return null;
 }
 
+// A bounded completion ledger for the fixed prompt bank. Removing a file does not re-open its question.
+const TEACH_PROMPT_IDS = ['word-hand', 'word-eye', 'word-water', 'word-food', 'word-house', 'word-sun', 'word-tree', 'word-book', 'word-child', 'phrase-how-are-you', 'phrase-good-morning', 'phrase-thank-you', 'sentence-your-name', 'sentence-going', 'sentence-coming'];
+function completedQuestions() {
+  const raw = PropertiesService.getScriptProperties().getProperty('COMPLETED_QUESTIONS_V1');
+  if (!raw) return {};
+  const value = JSON.parse(raw);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Completion ledger is invalid.');
+  return value;
+}
+function rememberCompletedQuestion(lessonId, recordingId, writeLocked) {
+  if (TEACH_PROMPT_IDS.indexOf(lessonId) === -1) return;
+  if (completedQuestions()[lessonId]) return;
+  const lock = LockService.getScriptLock();
+  const ownsLock = writeLocked === true;
+  if (!ownsLock) lock.waitLock(10000);
+  try {
+    const completed = completedQuestions();
+    if (!completed[lessonId]) {
+      completed[lessonId] = recordingId;
+      PropertiesService.getScriptProperties().setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
+    }
+  } finally { if (!ownsLock) lock.releaseLock(); }
+}
+function ownerKeyHash(key) {
+  if (!/^[a-f0-9]{64}$/.test(String(key || ''))) return '';
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, key, Utilities.Charset.UTF_8).map(function(byte) { return ('0' + ((byte + 256) % 256).toString(16)).slice(-2); }).join('');
+}
+function sharedLibraryItems(folder) {
+  const files = folder.getFiles();
+  const byId = new Map();
+  const metas = [];
+  while (files.hasNext()) {
+    const file = files.next();
+    if (file.isTrashed()) continue;
+    byId.set(file.getId(), file);
+    if (file.getName().endsWith('_meta.json')) metas.push(file);
+  }
+  const items = [];
+  const seen = new Set();
+  for (const file of metas) {
+    let meta;
+    try { meta = JSON.parse(file.getBlob().getDataAsString()); } catch (_) { continue; }
+    if (!meta || !/^[a-zA-Z0-9_-]{2,80}$/.test(meta.recordingId || '') || !/^[a-zA-Z0-9_-]{2,80}$/.test(meta.lessonId || '') || seen.has(meta.recordingId)) continue;
+    const base = meta.lessonId + '_' + meta.recordingId;
+    if (file.getName() !== base + '_meta.json') continue;
+    const audio = byId.get(meta.audioFileId);
+    const hasAudio = Boolean(audio && audio.getSize() > 0 && audio.getName().startsWith(base + '.'));
+    if (!hasAudio && !(meta.kind === 'text' && String(meta.edoSpelling || '').trim())) continue;
+    seen.add(meta.recordingId);
+    const english = String(meta.englishWord || '').trim();
+    if (!english) continue;
+    const spelling = String(meta.edoSpelling || '').trim();
+    const category = ['word', 'phrase', 'sentence'].indexOf(meta.category) !== -1 ? meta.category : (english.split(/\s+/).length <= 2 ? 'word' : 'phrase');
+    const permissions = meta.permissions || {};
+    rememberCompletedQuestion(meta.lessonId, meta.recordingId);
+    items.push({ id: 'cloud-' + meta.recordingId, sourceLessonId: meta.lessonId,
+      recordingId: meta.recordingId, english: english, edoText: spelling || undefined,
+      category: category, illustrationKey: 'chat', emoji: '🗣️', hasAudio: hasAudio,
+      cloudAudioFileId: hasAudio ? meta.audioFileId : undefined, cloudMetadataFileId: file.getId(),
+      audioDurationSec: Number(meta.durationSec) || 0, isSampleData: false, isCommunity: true,
+      syncStatus: 'synced_to_drive', status: hasAudio ? (spelling ? 'awaiting_review' : 'needs_writing') : 'needs_audio',
+      reviewStatus: meta.reviewStatus || 'pending_approval',
+      approvedBy: meta.approvedBy || undefined,
+      updatedAt: meta.updatedAt || meta.uploadedAt || '2026-01-01T00:00:00Z',
+      createdAt: meta.uploadedAt || '2026-01-01T00:00:00Z',
+      playbackPermission: permissions.playback === 'granted' ? 'granted' : 'denied',
+      dialect: String(meta.voiceContributor && meta.voiceContributor.dialect || '') });
+  }
+  return items;
+}
+
 /**
  * Strict Security Check: Verifies that a file belongs directly to the target studio folder.
  */
@@ -118,10 +189,49 @@ function isFileInStudioFolder(file) {
 }
 
 /**
- * Health check endpoint (GET).
+ * Health check endpoint (GET) and Administrator Approval Dashboard.
  */
 function doGet(e) {
   try {
+    const adminToken = e && e.parameter && e.parameter.admin_token ? String(e.parameter.admin_token).trim() : '';
+    if (adminToken) {
+      const admin = getVerifiedContributor(adminToken, 'admin_lock_entry');
+      if (!admin || admin.role !== 'admin') {
+        return createJsonResponse({ status: 'error', code: 'UNAUTHORIZED_ADMIN', message: 'Invalid administrator token.' });
+      }
+      const folder = DriveApp.getFolderById(TARGET_FOLDER_ID);
+      const items = sharedLibraryItems(folder);
+      const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Edo Studio Admin Approvals</title>' +
+        '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+        '<style>body{font-family:system-ui,-apple-system,sans-serif;background:#FAF7F0;color:#1A241D;margin:0;padding:24px;}' +
+        '.header{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #E6DFCF;padding-bottom:16px;margin-bottom:24px;}' +
+        '.badge-locked{background:#DCFCE7;color:#15803D;padding:4px 10px;border-radius:12px;font-weight:700;font-size:12px;}' +
+        '.badge-pending{background:#FEF3C7;color:#B45309;padding:4px 10px;border-radius:12px;font-weight:700;font-size:12px;}' +
+        '.card{background:#fff;border:1px solid #E6DFCF;border-radius:16px;padding:16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;}' +
+        '.btn{padding:8px 16px;border-radius:10px;border:none;cursor:pointer;font-weight:600;font-size:13px;}' +
+        '.btn-lock{background:#157A4C;color:#fff;}' +
+        '.btn-unlock{background:#DC2626;color:#fff;}' +
+        '</style></head><body><div class="header"><div><h1 style="margin:0 0 6px;">Edo Language Studio — Administrator Approvals</h1>' +
+        '<p style="margin:0;color:#556058;">Logged in as: <strong>' + admin.name + '</strong> (Administrator)</p></div></div>' +
+        '<div class="list">' +
+        items.map(function(item) {
+          const isLocked = item.reviewStatus === 'approved_locked';
+          return '<div class="card"><div><p style="margin:0 0 4px;font-weight:700;font-size:16px;">English: ' + item.english + '</p>' +
+            '<p style="margin:0;color:#157A4C;font-size:15px;">Edo: <strong>' + (item.edoText || 'Needs writing') + '</strong></p>' +
+            '<p style="margin:4px 0 0;font-size:12px;color:#7C857E;">ID: ' + item.recordingId + ' · Has Audio: ' + (item.hasAudio ? 'Yes' : 'No') + '</p></div>' +
+            '<div style="display:flex;align-items:center;gap:12px;">' +
+            '<span class="' + (isLocked ? 'badge-locked' : 'badge-pending') + '">' + (isLocked ? '🔒 Approved & Locked' : '⏳ Pending Approval') + '</span>' +
+            '<button class="btn ' + (isLocked ? 'btn-unlock' : 'btn-lock') + '" onclick="toggleLock(\'' + item.cloudMetadataFileId + '\',\'' + (isLocked ? 'admin_unlock_entry' : 'admin_lock_entry') + '\')">' +
+            (isLocked ? 'Unlock Entry' : 'Approve & Lock') + '</button></div></div>';
+        }).join('') +
+        '</div>' +
+        '<script>function toggleLock(metadataFileId, action){if(!confirm("Change approval status for this entry?"))return;' +
+        'fetch("",{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:action,metadataFileId:metadataFileId,authToken:"' + adminToken + '"})})' +
+        '.then(function(r){return r.json();}).then(function(res){if(res.status==="success")window.location.reload();else alert(res.message||"Action failed");})' +
+        '.catch(function(err){alert(err.message);});}</script>' +
+        '</body></html>';
+      return HtmlService.createHtmlOutput(html).setTitle('Edo Studio Admin Approvals');
+    }
     const folder = DriveApp.getFolderById(TARGET_FOLDER_ID);
     return createJsonResponse({
       status: 'ok',
@@ -142,8 +252,10 @@ function doGet(e) {
  */
 function doPost(e) {
   const lock = LockService.getScriptLock();
+  let readOnly = false;
+  try { readOnly = ['ping', 'get_library', 'get_question_state', 'get_collection_stats', 'get_needs_spelling', 'stream_audio'].indexOf(JSON.parse(e.postData.contents).action) !== -1; } catch (_) {}
   try {
-    lock.waitLock(10000); // 10s atomic queue lock
+    if (!readOnly) lock.waitLock(10000); // Writes stay serialized; folder reads do not block uploads.
   } catch (lockErr) {
     return createJsonResponse({
       status: 'error',
@@ -209,6 +321,58 @@ function doPost(e) {
       });
     }
 
+    if (action === 'get_library' || action === 'get_question_state') {
+      const props = PropertiesService.getScriptProperties();
+      const items = action === 'get_library' || !props.getProperty('COMPLETION_LEDGER_INITIALIZED_V1') ? sharedLibraryItems(folder) : [];
+      props.setProperty('COMPLETION_LEDGER_INITIALIZED_V1', 'true');
+      return createJsonResponse({ status: 'success', action: action, checkedAt: new Date().toISOString(),
+        items: action === 'get_library' ? items : undefined, answeredQuestionIds: Object.keys(completedQuestions()) });
+    }
+    if (action === 'update_recording_permissions') {
+      let file;
+      try { file = DriveApp.getFileById(String(payload.metadataFileId || '')); } catch (_) { return createJsonResponse({ status: 'error', message: 'Recording metadata not found.' }); }
+      if (!isFileInStudioFolder(file) || !file.getName().endsWith('_meta.json')) return createJsonResponse({ status: 'error', code: 'ACCESS_DENIED', message: 'Recording is outside the studio collection.' });
+      const meta = JSON.parse(file.getBlob().getDataAsString());
+      if (meta.reviewStatus === 'approved_locked' && verifiedContributor.role !== 'admin') {
+        return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'This contribution has been approved and locked by an administrator and cannot be modified.' });
+      }
+      const hash = ownerKeyHash(payload.ownerKey);
+      const registeredOwner = !verifiedContributor.isCommunity && meta.voiceContributor && meta.voiceContributor.id === verifiedContributor.id;
+      if (verifiedContributor.role !== 'admin' && !registeredOwner && !(hash && meta.ownerKeyHash === hash)) return createJsonResponse({ status: 'error', code: 'OWNER_REQUIRED', message: 'Permissions saved locally. This older cloud recording needs its owner or an administrator to authorize permission changes.' });
+      const permissions = payload.permissions || {};
+      if (['granted', 'denied', 'unknown'].indexOf(permissions.playback) === -1 || ['granted', 'denied', 'unknown'].indexOf(permissions.aiVoiceTraining) === -1) return createJsonResponse({ status: 'error', message: 'Invalid permissions.' });
+      meta.permissions = { playback: permissions.playback, aiVoiceTraining: permissions.aiVoiceTraining === 'granted' ? 'granted' : 'denied', statementVersion: '1' };
+      meta.updatedAt = new Date().toISOString();
+      file.setContent(JSON.stringify(meta, null, 2));
+      return createJsonResponse({ status: 'success', action: action });
+    }
+    if (action === 'upsert_text_contribution') {
+      const lessonId = String(payload.lessonId || '').trim();
+      const recordingId = String(payload.recordingId || '').trim();
+      const english = String(payload.english || '').trim();
+      const spelling = String(payload.edoText || '').trim();
+      if (!/^[a-zA-Z0-9_-]{2,80}$/.test(lessonId) || !/^text-[a-f0-9]{64}$/.test(recordingId) || !english || !spelling || english.length > 2000 || spelling.length > 5000) {
+        return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid written contribution.' });
+      }
+      const name = lessonId + '_' + recordingId + '_meta.json';
+      const existing = folder.getFilesByName(name);
+      if (existing.hasNext()) {
+        const file = existing.next();
+        const meta = JSON.parse(file.getBlob().getDataAsString());
+        if (meta.reviewStatus === 'approved_locked' && verifiedContributor.role !== 'admin') {
+          return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'This contribution has been approved and locked by an administrator and cannot be modified.' });
+        }
+        if (meta.englishWord !== english || meta.edoSpelling !== spelling) return createJsonResponse({ status: 'conflict', code: 'TEXT_CONFLICT', message: 'Existing spelling preserved; save a separate contribution.' });
+        return createJsonResponse({ status: 'success', verified: true, duplicate: true, metadataFileId: file.getId() });
+      }
+      const meta = { kind: 'text', lessonId: lessonId, recordingId: recordingId, englishWord: english,
+        edoSpelling: spelling, category: ['word', 'phrase', 'sentence'].indexOf(payload.category) !== -1 ? payload.category : 'word',
+        status: 'needs_audio', reviewStatus: 'pending_approval', approvedBy: null, uploadedAt: new Date().toISOString(), permissions: { playback: 'denied', aiVoiceTraining: 'denied' } };
+      const file = folder.createFile(Utilities.newBlob(JSON.stringify(meta), 'application/json', name));
+      rememberCompletedQuestion(lessonId, recordingId, true);
+      return createJsonResponse({ status: 'success', verified: file.getSize() > 0, metadataFileId: file.getId() });
+    }
+
     // Always read the current folder: deleted/trashed files must immediately leave progress totals.
     if (action === 'get_collection_stats') {
       const files = folder.getFiles();
@@ -227,12 +391,23 @@ function doPost(e) {
       const words = new Set();
       const writtenWords = new Set();
       const recordings = new Set();
+      const textRecords = new Set();
       let phrasesAndSentences = 0;
       let reviewQueueCount = 0;
       let needsHelpCount = 0;
       for (const file of metadataFiles) {
         let meta;
         try { meta = JSON.parse(file.getBlob().getDataAsString()); } catch (_) { continue; }
+        if (meta && meta.kind === 'text' && /^[a-zA-Z0-9_-]{2,80}$/.test(meta.lessonId || '') && /^text-[a-f0-9]{64}$/.test(meta.recordingId || '') &&
+            file.getName() === meta.lessonId + '_' + meta.recordingId + '_meta.json' && String(meta.edoSpelling || '').trim() && !textRecords.has(meta.recordingId)) {
+          const english = String(meta.englishWord || '').trim().toLowerCase();
+          textRecords.add(meta.recordingId);
+          if (meta.category === 'word' && english) { words.add(english); writtenWords.add(english); }
+          else if (english) phrasesAndSentences++;
+          needsHelpCount++;
+          rememberCompletedQuestion(meta.lessonId, meta.recordingId);
+          continue;
+        }
         if (!meta || typeof meta.recordingId !== 'string' || typeof meta.lessonId !== 'string' ||
             /^(sync-test-|test-)/.test(meta.recordingId) || /^(sync-test-|test-)/.test(meta.lessonId) ||
             !byId.has(meta.audioFileId) || recordings.has(meta.recordingId)) continue;
@@ -241,6 +416,7 @@ function doPost(e) {
         if (audio.getSize() === 0 || !audio.getName().startsWith(expectedBase + '.') ||
             file.getName() !== expectedBase + '_meta.json') continue;
         recordings.add(meta.recordingId);
+        rememberCompletedQuestion(meta.lessonId, meta.recordingId);
         const english = String(meta.englishWord || '').trim().toLowerCase();
         const spelling = String(meta.edoSpelling || '').trim();
         const category = ['word', 'phrase', 'sentence'].indexOf(meta.category) !== -1
@@ -257,7 +433,7 @@ function doPost(e) {
         stats: { fileCount: fileCount, audioFileCount: audioFileCount,
           metadataFileCount: metadataFiles.length, wordsCollected: words.size,
           voiceRecordings: recordings.size, writtenWords: writtenWords.size,
-          phrasesAndSentences: phrasesAndSentences, totalContributions: recordings.size,
+          phrasesAndSentences: phrasesAndSentences, totalContributions: recordings.size + textRecords.size,
           reviewQueueCount: reviewQueueCount, needsHelpCount: needsHelpCount }
       });
     }
@@ -346,9 +522,27 @@ function doPost(e) {
       const existingAudioFiles = folder.getFilesByName(audioFileName);
       const existingMetaFiles = folder.getFilesByName(metaFileName);
 
-      if (existingAudioFiles.hasNext() && existingMetaFiles.hasNext()) {
-        const existingAudio = existingAudioFiles.next();
-        const existingMeta = existingMetaFiles.next();
+      if (existingMetaFiles.hasNext()) {
+        const checkMetaFile = existingMetaFiles.next();
+        try {
+          const checkMeta = JSON.parse(checkMetaFile.getBlob().getDataAsString());
+          if (checkMeta && checkMeta.reviewStatus === 'approved_locked' && verifiedContributor.role !== 'admin') {
+            return createJsonResponse({
+              status: 'error',
+              code: 'ENTRY_LOCKED',
+              message: 'This lesson has been approved and locked by an administrator and cannot be modified.'
+            });
+          }
+        } catch (_) {}
+      }
+
+      // Re-query if consumed
+      const freshAudioFiles = folder.getFilesByName(audioFileName);
+      const freshMetaFiles = folder.getFilesByName(metaFileName);
+
+      if (freshAudioFiles.hasNext() && freshMetaFiles.hasNext()) {
+        const existingAudio = freshAudioFiles.next();
+        const existingMeta = freshMetaFiles.next();
 
         if (existingAudio.getSize() > 0 && existingMeta.getSize() > 0) {
           try {
@@ -356,6 +550,7 @@ function doPost(e) {
             if (parsedMeta.recordingId === recordingId &&
                 parsedMeta.lessonId === lessonId &&
                 parsedMeta.audioFileId === existingAudio.getId()) {
+              rememberCompletedQuestion(lessonId, recordingId, true);
               return createJsonResponse({
                 status: 'success',
                 duplicate: true,
@@ -387,12 +582,15 @@ function doPost(e) {
 
       // 2. Create Companion Metadata JSON (Using Server-Verified Identity)
       const metadata = {
+        ownerKeyHash: ownerKeyHash(payload.ownerKey),
         recordingId: recordingId,
         lessonId: lessonId,
         englishWord: english,
         category: ['word', 'phrase', 'sentence'].indexOf(payload.category) !== -1 ? payload.category : (english.trim().split(/\s+/).length <= 2 ? 'word' : 'phrase'),
         edoSpelling: edoText,
         status: recordingStatus,
+        reviewStatus: 'pending_approval',
+        approvedBy: null,
         audioFileId: audioFile.getId(),
         audioFileName: audioFileName,
         audioMimeType: mimeType,
@@ -439,6 +637,7 @@ function doPost(e) {
         throw new Error('Cloud storage verification failed: File was not indexed correctly.');
       }
 
+      rememberCompletedQuestion(lessonId, recordingId, true);
       return createJsonResponse({
         status: 'success',
         duplicate: false,
@@ -606,6 +805,17 @@ function doPost(e) {
         return createJsonResponse({ status: 'error', code: 'METADATA_UNREADABLE', message: 'Metadata file is corrupted.' });
       }
 
+      if (String(metaContent.edoSpelling || '').trim() === edoSpelling) return createJsonResponse({ status: 'success', action: 'submit_spelling', duplicate: true });
+      if (edoSpelling.length > 5000 || !metaFile.getName().endsWith('_meta.json') || !metaContent.recordingId || !metaContent.lessonId) return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid spelling record.' });
+
+      if (metaContent.reviewStatus === 'approved_locked' && verifiedContributor.role !== 'admin') {
+        return createJsonResponse({
+          status: 'error',
+          code: 'ENTRY_LOCKED',
+          message: 'This contribution has been approved and locked by an administrator and cannot be modified.'
+        });
+      }
+
       // Check 2: Strict Status Check (Must be 'needs_spelling')
       if (metaContent.status !== 'needs_spelling') {
         return createJsonResponse({
@@ -640,6 +850,91 @@ function doPost(e) {
       });
     }
 
+    // ACTION F: Admin Lock Entry (Approval & Protection)
+    if (action === 'admin_lock_entry') {
+      if (verifiedContributor.role !== 'admin') {
+        return createJsonResponse({
+          status: 'error',
+          code: 'UNAUTHORIZED_ADMIN',
+          message: 'Admin authorization required to lock contributions.'
+        });
+      }
+      const metadataFileId = String(payload.metadataFileId || '').trim();
+      if (!metadataFileId) {
+        return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Missing metadataFileId.' });
+      }
+      let metaFile;
+      try {
+        metaFile = DriveApp.getFileById(metadataFileId);
+      } catch (err) {
+        return createJsonResponse({ status: 'error', code: 'NOT_FOUND', message: 'Metadata record not found.' });
+      }
+      if (!isFileInStudioFolder(metaFile) || !metaFile.getName().endsWith('_meta.json')) {
+        return createJsonResponse({ status: 'error', code: 'ACCESS_DENIED', message: 'Record is outside studio collection.' });
+      }
+      let meta;
+      try {
+        meta = JSON.parse(metaFile.getBlob().getDataAsString());
+      } catch (e) {
+        return createJsonResponse({ status: 'error', code: 'METADATA_UNREADABLE', message: 'Metadata file is unreadable.' });
+      }
+      meta.reviewStatus = 'approved_locked';
+      meta.approvedBy = {
+        id: verifiedContributor.id,
+        name: verifiedContributor.name,
+        approvedAt: new Date().toISOString()
+      };
+      meta.updatedAt = new Date().toISOString();
+      metaFile.setContent(JSON.stringify(meta, null, 2));
+      return createJsonResponse({
+        status: 'success',
+        action: 'admin_lock_entry',
+        metadataFileId: metadataFileId,
+        reviewStatus: 'approved_locked',
+        approvedBy: meta.approvedBy
+      });
+    }
+
+    // ACTION G: Admin Unlock Entry
+    if (action === 'admin_unlock_entry') {
+      if (verifiedContributor.role !== 'admin') {
+        return createJsonResponse({
+          status: 'error',
+          code: 'UNAUTHORIZED_ADMIN',
+          message: 'Admin authorization required to unlock contributions.'
+        });
+      }
+      const metadataFileId = String(payload.metadataFileId || '').trim();
+      if (!metadataFileId) {
+        return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Missing metadataFileId.' });
+      }
+      let metaFile;
+      try {
+        metaFile = DriveApp.getFileById(metadataFileId);
+      } catch (err) {
+        return createJsonResponse({ status: 'error', code: 'NOT_FOUND', message: 'Metadata record not found.' });
+      }
+      if (!isFileInStudioFolder(metaFile) || !metaFile.getName().endsWith('_meta.json')) {
+        return createJsonResponse({ status: 'error', code: 'ACCESS_DENIED', message: 'Record is outside studio collection.' });
+      }
+      let meta;
+      try {
+        meta = JSON.parse(metaFile.getBlob().getDataAsString());
+      } catch (e) {
+        return createJsonResponse({ status: 'error', code: 'METADATA_UNREADABLE', message: 'Metadata file is unreadable.' });
+      }
+      meta.reviewStatus = 'pending_approval';
+      meta.approvedBy = null;
+      meta.updatedAt = new Date().toISOString();
+      metaFile.setContent(JSON.stringify(meta, null, 2));
+      return createJsonResponse({
+        status: 'success',
+        action: 'admin_unlock_entry',
+        metadataFileId: metadataFileId,
+        reviewStatus: 'pending_approval'
+      });
+    }
+
     return createJsonResponse({
       status: 'error',
       code: 'UNKNOWN_ACTION',
@@ -652,7 +947,7 @@ function doPost(e) {
       message: 'Gateway execution error: ' + err.toString()
     });
   } finally {
-    lock.releaseLock();
+    if (!readOnly) lock.releaseLock();
   }
 }
 
@@ -850,7 +1145,7 @@ function runFullGatewaySelfTest() {
     }
 
     // TEST I: Concurrency Conflict Protection (Negative Test - Second submit on same item)
-    const conflictResult = JSON.parse(doPost({ postData: { contents: JSON.stringify(spellingPayload) } }).getContent());
+    const conflictResult = JSON.parse(doPost({ postData: { contents: JSON.stringify(Object.assign({}, spellingPayload, { edoSpelling: 'Conflicting spelling' })) } }).getContent());
     if (conflictResult.code === 'SPELLING_ALREADY_SUBMITTED') {
       Logger.log('TEST 11: Concurrency Conflict Protection: PASSED');
     } else {

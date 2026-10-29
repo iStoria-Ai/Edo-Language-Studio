@@ -9,6 +9,7 @@ import {
   FileEdit,
   CheckCircle2
 } from 'lucide-react';
+import { getCommunityAudio } from '../services/communityLibrary';
 import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import {
@@ -24,7 +25,8 @@ interface HelpOthersScreenProps {
   onAttachAudioToEntry: (
     entryId: string,
     audioDataUrl: string,
-    durationSec: number
+    durationSec: number,
+    playbackAllowed?: boolean
   ) => Promise<void>;
   onBackToDashboard: () => void;
 }
@@ -47,6 +49,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   const [playbackSec, setPlaybackSec] = useState(0);
 
   // Audio recording state (for "Needs Voice" mode)
+  const [playbackAllowed, setPlaybackAllowed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordSec, setRecordSec] = useState(0);
   const [capturedAudioUrl, setCapturedAudioUrl] = useState<string | undefined>(undefined);
@@ -55,7 +58,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
 
-  const needsWritingList = entries.filter((e) => e.status === 'needs_writing');
+  const needsWritingList = entries.filter((e) => e.status === 'needs_writing' && !e.spellingSyncStatus && (!e.isCommunity || e.playbackPermission === 'granted'));
   const needsAudioList = entries.filter((e) => e.status === 'needs_audio');
 
   const activeList = helpMode === 'write' ? needsWritingList : needsAudioList;
@@ -73,7 +76,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     window.setTimeout(() => setFeedbackBanner(null), 2800);
   };
 
-  const handlePlayExistingAudio = () => {
+  const handlePlayExistingAudio = async () => {
     if (!currentItem) return;
     if (isPlaying) {
       stopActivePlayback();
@@ -81,7 +84,10 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
       return;
     }
     const duration = currentItem.audioDurationSec || 4;
-    playAudioRecording(currentItem.audioDataUrl, duration, (sec, playing) => {
+    let audio: string;
+    try { audio = currentItem.audioDataUrl || await getCommunityAudio(currentItem); }
+    catch (error) { showTransientMessage(String(error)); return; }
+    playAudioRecording(audio, duration, (sec, playing) => {
       setPlaybackSec(sec);
       setIsPlaying(playing);
     });
@@ -96,9 +102,10 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     }
     stopActivePlayback();
     setIsPlaying(false);
-    await onAttachWritingToEntry(currentItem.id, trimmed);
+    try { await onAttachWritingToEntry(currentItem.id, trimmed); }
+    catch (error) { showTransientMessage(String(error)); return; }
     setWrittenAnswer('');
-    showTransientMessage(`Thank you! Added Edo writing for "${currentItem.english}".`);
+    showTransientMessage(`Edo writing saved for "${currentItem.english}". Device Sync confirms pending uploads when online.`);
     setCurrentIndex(0);
   };
 
@@ -170,7 +177,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     if (!currentItem || !capturedAudioUrl) return;
     stopActivePlayback();
     setIsPlaying(false);
-    await onAttachAudioToEntry(currentItem.id, capturedAudioUrl, capturedDuration);
+    await onAttachAudioToEntry(currentItem.id, capturedAudioUrl, capturedDuration, playbackAllowed);
     setCapturedAudioUrl(undefined);
     showTransientMessage(`Thank you! Added Edo voice recording for "${currentItem.english}".`);
     setCurrentIndex(0);
@@ -405,7 +412,8 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
             </div>
 
             <div className="flex flex-col gap-2.5 pt-2">
-              <button
+              <label className="flex items-start gap-2 text-sm leading-snug"><input type="checkbox" checked={playbackAllowed} onChange={event => setPlaybackAllowed(event.target.checked)} />I am the speaker and permit shared-library playback. AI voice training is not granted.</label>
+                  <button
                 type="button"
                 disabled={!capturedAudioUrl}
                 onClick={handleSaveRecordedAudioForWrittenEntry}

@@ -15,7 +15,8 @@ const cloudBundle = buildSync({
   bundle: true,
   write: false,
   platform: 'node',
-  format: 'cjs'
+  format: 'cjs',
+  external: ['@capacitor/*']
 }).outputFiles[0].text;
 
 const storageBundle = buildSync({
@@ -40,6 +41,11 @@ function loadCloudService(mockFetch, mockLocalStorage = new Map()) {
     btoa,
     fetch: mockFetch,
     AbortSignal,
+    require: name => {
+      if (name === '@capacitor/core') return { Capacitor: { isNativePlatform: () => false } };
+      if (name === '@capacitor/preferences') return { Preferences: { get: async ({ key }) => ({ value: mockLocalStorage.get(key) ?? null }), set: async ({ key, value }) => mockLocalStorage.set(key, value) } };
+      throw Error(name);
+    },
     localStorage: {
       getItem: (key) => mockLocalStorage.get(key) ?? null,
       setItem: (key, val) => mockLocalStorage.set(key, String(val)),
@@ -303,11 +309,11 @@ function generateSampleWav() {
     assert.equal(res1.audioDataUrl, sampleAudio);
     assert.equal(fetchCount, 1);
 
-    // Second call should hit the cache without re-fetching
+    // Second online playback must re-check permission instead of trusting an old authorization
     const res2 = await service.streamAudioFromGateway('cloud_file_123');
     assert.equal(res2.ok, true);
     assert.equal(res2.audioDataUrl, sampleAudio);
-    assert.equal(fetchCount, 1, 'streamAudioFromGateway should cache streamed audio in memory');
+    assert.equal(fetchCount, 2, 'Online playback must re-check current server permission');
   }
 
   // Test 9: Background worker executes upload -> verifies stream -> safely frees local audio bytes
