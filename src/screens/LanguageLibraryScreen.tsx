@@ -46,10 +46,13 @@ type LibraryFilter = 'all' | 'words' | 'phrases';
  * - Successfully synchronized online record (or sample/verified)
  */
 export function isCompletedLesson(entry: EdoEntry): boolean {
+  if (entry.status === 'unanswered' || entry.status === 'needs_writing' || entry.status === 'needs_audio') {
+    return false;
+  }
   const hasEnglish = Boolean(entry.english && entry.english.trim());
   const hasEdo = Boolean(entry.edoText && entry.edoText.trim());
   const hasAudio = Boolean(entry.hasAudio && (entry.audioDataUrl || entry.cloudAudioFileId || entry.isSampleData));
-  const isOnlineSynced = entry.syncStatus === 'synced_to_drive' || Boolean(entry.cloudMetadataFileId) || entry.isSampleData;
+  const isOnlineSynced = entry.syncStatus === 'synced_to_drive' || Boolean(entry.cloudMetadataFileId) || entry.isSampleData || Boolean(entry.audioDataUrl);
   return Boolean(hasEnglish && hasEdo && hasAudio && isOnlineSynced);
 }
 

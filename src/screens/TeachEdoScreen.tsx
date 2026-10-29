@@ -94,8 +94,9 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
 
   const confirmLeave = () => !isRecording && (!recordedAudioUrl || stepState === 'completed' || window.confirm('Discard this unsaved recording? Save it first to keep it.'));
 
-  const currentQuestion = questions[questionIndex] || questions[0];
   const totalQuestions = Math.max(1, questions.length);
+  const safeIndex = questions.length > 0 ? questionIndex % questions.length : 0;
+  const currentQuestion = questions[safeIndex] || questions[0];
 
   useEffect(() => {
     let active = true;
@@ -116,10 +117,6 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     window.addEventListener('focus', reconnect);
     return () => { active = false; window.clearInterval(timer); window.removeEventListener('online', reconnect); window.removeEventListener('focus', reconnect); };
   }, [retryShared]);
-  const availableIndex = answeredIds ? nextUnansweredQuestion(questions, answeredIds, questionIndex) : -1;
-  useEffect(() => {
-    if (answeredIds && stepState === 'prompt' && !isRecording && !recordedAudioUrl && availableIndex >= 0 && availableIndex !== questionIndex) setQuestionIndex(availableIndex);
-  }, [answeredIds, availableIndex, questionIndex, stepState, isRecording, recordedAudioUrl]);
 
   // Sync external step state if controlled in dev preview mode
   useEffect(() => {
@@ -377,23 +374,37 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
       setSkipFeedback(null);
     }
     setQuestionIndex(prev => {
-      const next = nextUnansweredQuestion(questions, answeredIds || new Set(), (prev + 1) % totalQuestions);
-      return next >= 0 ? next : prev;
+      const next = (prev + 1) % Math.max(1, questions.length);
+      return next;
     });
     updateStep('prompt');
   };
 
-  const progressPercent = Math.min(100, Math.round(((questionIndex + 1) / totalQuestions) * 100));
+  const progressPercent = Math.min(100, Math.round(((safeIndex + 1) / totalQuestions) * 100));
 
-  if (stepState === 'prompt' && !isRecording && !recordedAudioUrl && (!answeredIds || availableIndex < 0 || availableIndex !== questionIndex)) {
-    return <div className="edo-screen"><StudioHeader theme="green" sectionLabel="Teach Edo" rightAction="close" onRightAction={onFinishForNow} /><div className="p-5 space-y-4" role="status">
-      <h1 className="text-xl font-bold">{!answeredIds ? 'Checking the shared questions…' : availableIndex < 0 ? 'All current questions are answered' : 'Finding the next unanswered question…'}</h1>
-      <p>{!answeredIds ? 'Connect to Google Drive so questions already answered by another user are not repeated.' : 'Saved answers stay in the shared Library. You can help with missing Edo spelling or teach something new.'}</p>
-      {sharedError && <p role="alert" className="text-red-700">{sharedError}</p>}
-      <button type="button" className="edo-secondary-btn" onClick={() => setRetryShared(value => value + 1)}>Refresh shared questions</button>
-      <button type="button" className="edo-primary-btn" onClick={onOpenTeachSomethingElse}>Teach something else</button>
-      <button type="button" className="edo-secondary-btn" onClick={onFinishForNow}>Back to dashboard</button>
-    </div></div>;
+  if (stepState === 'prompt' && !isRecording && !recordedAudioUrl && questions.length === 0) {
+    return (
+      <div className="edo-screen">
+        <StudioHeader theme="green" sectionLabel="Teach Edo" rightAction="close" onRightAction={onFinishForNow} />
+        <div className="p-6 text-center space-y-4" role="status">
+          <div className="w-14 h-14 rounded-full bg-[#E8F5E9] text-[#157A4C] flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-7 h-7" />
+          </div>
+          <h1 className="text-xl font-bold text-[#1A241D]">All studio prompt words have been recorded!</h1>
+          <p className="text-sm text-[#556058] max-w-sm mx-auto leading-relaxed">
+            Every word in the studio prompt bank has received an Edo pronunciation recording. You can help add missing Edo spellings or teach a brand new word!
+          </p>
+          <div className="pt-2 flex flex-col gap-2.5 max-w-xs mx-auto">
+            <button type="button" className="edo-primary-btn" onClick={onOpenTeachSomethingElse}>
+              Teach Something Else
+            </button>
+            <button type="button" className="edo-secondary-btn" onClick={onFinishForNow}>
+              Back to Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

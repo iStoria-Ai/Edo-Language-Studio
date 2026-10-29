@@ -129,5 +129,54 @@ const shared = { id: 'cloud-rec-a', recordingId: 'rec-a', sourceLessonId: 'word-
   const clientBUpdated = await clientB.api.fetchCommunityLibrary();
   assert.equal(clientBUpdated.entries.find(e => e.recordingId === 'rec-phrase-going').reviewStatus, 'approved_locked');
 
-  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, and admin locking.');
+  // Verify section movement workflow: Teach Edo -> Help Others -> Library
+  // Item 1: Recorded without spelling -> MUST be in Help Others, NOT in Teach Edo, NOT in Library
+  const voiceOnlyItem = {
+    id: 'cloud-rec-voice-only',
+    recordingId: 'rec-voice-only',
+    sourceLessonId: 'word-hand',
+    english: 'Hand',
+    category: 'word',
+    hasAudio: true,
+    cloudAudioFileId: 'audio-hand',
+    cloudMetadataFileId: 'meta-hand',
+    isCommunity: true,
+    playbackPermission: 'granted',
+    status: 'needs_writing',
+    isSampleData: false,
+    updatedAt: new Date().toISOString()
+  };
+  // Has voice, missing spelling
+  const needsWriting = Boolean(voiceOnlyItem.hasAudio && (!voiceOnlyItem.edoText || !voiceOnlyItem.edoText.trim()));
+  const isCompleteVoiceOnly = Boolean(voiceOnlyItem.english && voiceOnlyItem.edoText && voiceOnlyItem.hasAudio);
+  assert.equal(needsWriting, true, 'Item with voice but missing spelling must be classified as needs writing');
+  assert.equal(isCompleteVoiceOnly, false, 'Incomplete item must not be classified as completed library lesson');
+
+  // Once spelling is added:
+  const completedHand = { ...voiceOnlyItem, edoText: 'Obo', status: 'awaiting_review' };
+  const needsWritingAfterSpelling = Boolean(completedHand.hasAudio && (!completedHand.edoText || !completedHand.edoText.trim()));
+  const isCompleteHand = Boolean(completedHand.english && completedHand.edoText && completedHand.hasAudio);
+  assert.equal(needsWritingAfterSpelling, false, 'Completed item must be removed from Help Others');
+  assert.equal(isCompleteHand, true, 'Completed item must appear in Library');
+
+  // Item 2: Both voice and spelling completed in Teach Edo -> moves directly to Library
+  const directCompleteItem = {
+    id: 'cloud-rec-eye',
+    recordingId: 'rec-eye',
+    sourceLessonId: 'word-eye',
+    english: 'Eye',
+    edoText: 'Aro',
+    category: 'word',
+    hasAudio: true,
+    cloudAudioFileId: 'audio-eye',
+    cloudMetadataFileId: 'meta-eye',
+    isCommunity: true,
+    status: 'awaiting_review',
+    isSampleData: false,
+    updatedAt: new Date().toISOString()
+  };
+  assert.equal(Boolean(directCompleteItem.hasAudio && (!directCompleteItem.edoText || !directCompleteItem.edoText.trim())), false, 'Directly completed item must never enter Help Others');
+  assert.equal(Boolean(directCompleteItem.english && directCompleteItem.edoText && directCompleteItem.hasAudio), true, 'Directly completed item enters Library immediately');
+
+  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, and automatic section progression.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -176,10 +176,32 @@ export const App: React.FC = () => {
     await refreshLibrary();
   };
 
-  // Ordered questions for Teach Edo flow (starting with "Hand")
-  const teachQuestions: EdoEntry[] = TEACH_QUESTION_IDS.map(
-    (id) => entries.find((e) => e.id === id) || INITIAL_EDO_ENTRIES.find(e => e.id === id)!
-  );
+  // Teach Edo must show ONLY words or phrases that have not yet received a valid saved voice recording
+  const answeredPromptIds = new Set<string>([
+    ...(community?.answeredQuestionIds || []),
+    ...sharedEntries
+      .filter((e) => (e.hasAudio && !e.isSampleData) || Boolean(e.cloudAudioFileId))
+      .map((e) => e.sourceLessonId || e.id)
+  ]);
+
+  const teachQuestions: EdoEntry[] = TEACH_QUESTION_IDS
+    .map((id) => {
+      const prompt = INITIAL_EDO_ENTRIES.find((e) => e.id === id)!;
+      const matched = sharedEntries.find(
+        (e) =>
+          e.id === id ||
+          e.sourceLessonId === id ||
+          e.english.trim().toLowerCase() === prompt.english.trim().toLowerCase()
+      );
+      return matched || prompt;
+    })
+    .filter((q) => {
+      const isAnswered =
+        answeredPromptIds.has(q.id) ||
+        Boolean(q.sourceLessonId && answeredPromptIds.has(q.sourceLessonId)) ||
+        Boolean((q.hasAudio && !q.isSampleData) || q.cloudAudioFileId);
+      return !isAnswered;
+    });
 
   // Compute current numbered screen badge (used only in optional dev preview mode)
   const getActiveScreenNumber = (): ScreenNumber => {
@@ -551,7 +573,7 @@ export const App: React.FC = () => {
     setShowSystemModal(false);
   };
 
-  const stats = computeStudioStats(entries);
+  const stats = computeStudioStats(sharedEntries);
   const currentScreenNumber = getActiveScreenNumber();
 
   const renderScreenBySection = (

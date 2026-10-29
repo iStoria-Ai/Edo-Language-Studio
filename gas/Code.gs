@@ -105,6 +105,26 @@ function getVerifiedContributor(providedToken, action) {
 
 // A bounded completion ledger for the fixed prompt bank. Removing a file does not re-open its question.
 const TEACH_PROMPT_IDS = ['word-hand', 'word-eye', 'word-water', 'word-food', 'word-house', 'word-sun', 'word-tree', 'word-book', 'word-child', 'phrase-how-are-you', 'phrase-good-morning', 'phrase-thank-you', 'sentence-your-name', 'sentence-going', 'sentence-coming'];
+const PROMPT_ENGLISH_TO_ID = {
+  'hand': 'word-hand',
+  'eye': 'word-eye',
+  'water': 'word-water',
+  'food': 'word-food',
+  'house': 'word-house',
+  'sun': 'word-sun',
+  'tree': 'word-tree',
+  'book': 'word-book',
+  'child': 'word-child',
+  'how are you?': 'phrase-how-are-you',
+  'how are you': 'phrase-how-are-you',
+  'good morning': 'phrase-good-morning',
+  'thank you': 'phrase-thank-you',
+  'what is your name?': 'sentence-your-name',
+  'what is your name': 'sentence-your-name',
+  'where are you going?': 'sentence-going',
+  'where are you going': 'sentence-going',
+  'i am coming': 'sentence-coming'
+};
 function completedQuestions() {
   const raw = PropertiesService.getScriptProperties().getProperty('COMPLETED_QUESTIONS_V1');
   if (!raw) return {};
@@ -112,16 +132,20 @@ function completedQuestions() {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Completion ledger is invalid.');
   return value;
 }
-function rememberCompletedQuestion(lessonId, recordingId, writeLocked) {
-  if (TEACH_PROMPT_IDS.indexOf(lessonId) === -1) return;
-  if (completedQuestions()[lessonId]) return;
+function rememberCompletedQuestion(lessonId, recordingId, englishWord, writeLocked) {
+  let targetId = TEACH_PROMPT_IDS.indexOf(lessonId) !== -1 ? lessonId : '';
+  if (!targetId && englishWord) {
+    targetId = PROMPT_ENGLISH_TO_ID[String(englishWord).trim().toLowerCase()] || '';
+  }
+  if (!targetId) return;
+  if (completedQuestions()[targetId]) return;
   const lock = LockService.getScriptLock();
   const ownsLock = writeLocked === true;
   if (!ownsLock) lock.waitLock(10000);
   try {
     const completed = completedQuestions();
-    if (!completed[lessonId]) {
-      completed[lessonId] = recordingId;
+    if (!completed[targetId]) {
+      completed[targetId] = recordingId;
       PropertiesService.getScriptProperties().setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
     }
   } finally { if (!ownsLock) lock.releaseLock(); }
@@ -157,7 +181,7 @@ function sharedLibraryItems(folder) {
     const spelling = String(meta.edoSpelling || '').trim();
     const category = ['word', 'phrase', 'sentence'].indexOf(meta.category) !== -1 ? meta.category : (english.split(/\s+/).length <= 2 ? 'word' : 'phrase');
     const permissions = meta.permissions || {};
-    rememberCompletedQuestion(meta.lessonId, meta.recordingId);
+    rememberCompletedQuestion(meta.lessonId, meta.recordingId, meta.englishWord);
     items.push({ id: 'cloud-' + meta.recordingId, sourceLessonId: meta.lessonId,
       recordingId: meta.recordingId, english: english, edoText: spelling || undefined,
       category: category, illustrationKey: 'chat', emoji: '🗣️', hasAudio: hasAudio,
@@ -331,7 +355,7 @@ function doPost(e) {
         edoSpelling: spelling, category: ['word', 'phrase', 'sentence'].indexOf(payload.category) !== -1 ? payload.category : 'word',
         status: 'needs_audio', reviewStatus: 'pending_approval', approvedBy: null, uploadedAt: new Date().toISOString(), permissions: { playback: 'denied', aiVoiceTraining: 'denied' } };
       const file = folder.createFile(Utilities.newBlob(JSON.stringify(meta), 'application/json', name));
-      rememberCompletedQuestion(lessonId, recordingId, true);
+      rememberCompletedQuestion(lessonId, recordingId, english, true);
       return createJsonResponse({ status: 'success', verified: file.getSize() > 0, metadataFileId: file.getId() });
     }
 
@@ -367,7 +391,7 @@ function doPost(e) {
           if (meta.category === 'word' && english) { words.add(english); writtenWords.add(english); }
           else if (english) phrasesAndSentences++;
           needsHelpCount++;
-          rememberCompletedQuestion(meta.lessonId, meta.recordingId);
+          rememberCompletedQuestion(meta.lessonId, meta.recordingId, meta.englishWord);
           continue;
         }
         if (!meta || typeof meta.recordingId !== 'string' || typeof meta.lessonId !== 'string' ||
@@ -378,7 +402,7 @@ function doPost(e) {
         if (audio.getSize() === 0 || !audio.getName().startsWith(expectedBase + '.') ||
             file.getName() !== expectedBase + '_meta.json') continue;
         recordings.add(meta.recordingId);
-        rememberCompletedQuestion(meta.lessonId, meta.recordingId);
+        rememberCompletedQuestion(meta.lessonId, meta.recordingId, meta.englishWord);
         const english = String(meta.englishWord || '').trim().toLowerCase();
         const spelling = String(meta.edoSpelling || '').trim();
         const category = ['word', 'phrase', 'sentence'].indexOf(meta.category) !== -1
@@ -512,7 +536,7 @@ function doPost(e) {
             if (parsedMeta.recordingId === recordingId &&
                 parsedMeta.lessonId === lessonId &&
                 parsedMeta.audioFileId === existingAudio.getId()) {
-              rememberCompletedQuestion(lessonId, recordingId, true);
+              rememberCompletedQuestion(lessonId, recordingId, english, true);
               return createJsonResponse({
                 status: 'success',
                 duplicate: true,
@@ -599,7 +623,7 @@ function doPost(e) {
         throw new Error('Cloud storage verification failed: File was not indexed correctly.');
       }
 
-      rememberCompletedQuestion(lessonId, recordingId, true);
+      rememberCompletedQuestion(lessonId, recordingId, english, true);
       return createJsonResponse({
         status: 'success',
         duplicate: false,

@@ -58,8 +58,20 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
 
-  const needsWritingList = entries.filter((e) => e.status === 'needs_writing' && !e.spellingSyncStatus && (!e.isCommunity || e.playbackPermission === 'granted'));
-  const needsAudioList = entries.filter((e) => e.status === 'needs_audio');
+  const needsWritingList = entries.filter((e) => {
+    if (e.isSampleData) return false;
+    const hasVoice = Boolean((e.hasAudio && !e.isSampleData) || e.cloudAudioFileId || (e.audioDataUrl && !e.isSampleData));
+    if (!hasVoice) return false;
+    const hasSpelling = Boolean(e.edoText && e.edoText.trim().length > 0);
+    return !hasSpelling && (!e.isCommunity || e.playbackPermission === 'granted');
+  });
+  const needsAudioList = entries.filter((e) => {
+    if (e.isSampleData) return false;
+    const hasSpelling = Boolean(e.edoText && e.edoText.trim().length > 0);
+    if (!hasSpelling) return false;
+    const hasVoice = Boolean((e.hasAudio && !e.isSampleData) || e.cloudAudioFileId || (e.audioDataUrl && !e.isSampleData));
+    return !hasVoice;
+  });
 
   const activeList = helpMode === 'write' ? needsWritingList : needsAudioList;
   const currentItem = activeList[currentIndex % Math.max(1, activeList.length)];
@@ -105,7 +117,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     try { await onAttachWritingToEntry(currentItem.id, trimmed); }
     catch (error) { showTransientMessage(String(error)); return; }
     setWrittenAnswer('');
-    showTransientMessage(`Edo writing saved for "${currentItem.english}". Device Sync confirms pending uploads when online.`);
+    showTransientMessage(`Edo writing saved for "${currentItem.english}". Contribution completed and moved to the Library.`);
     setCurrentIndex(0);
   };
 
