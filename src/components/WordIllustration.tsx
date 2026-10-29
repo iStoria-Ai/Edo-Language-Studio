@@ -1,24 +1,159 @@
 import React from 'react';
+import {
+  Bus,
+  Car,
+  Bike,
+  Train,
+  Plane,
+  Ship,
+  Home,
+  Bed,
+  Utensils,
+  Apple,
+  Users,
+  Sun,
+  CloudRain,
+  Trees,
+  BookOpen,
+  Footprints,
+  Building,
+  Flame,
+  Fish,
+  Baby,
+  Coffee,
+  Heart,
+  Smile,
+  ShoppingBag,
+  Briefcase,
+  Music,
+  Sparkles,
+  Moon,
+  Eye,
+  Activity,
+  Compass,
+  Key,
+  Layers,
+  Milestone,
+  Truck,
+  Armchair,
+  DoorClosed,
+  Volume2,
+  MessageCircle,
+  Wind,
+  Mountain,
+  Globe,
+  RotateCcw,
+  TrendingUp,
+  TrendingDown,
+  User,
+  Lamp,
+  Pencil,
+  Check,
+  X
+} from 'lucide-react';
 
 interface WordIllustrationProps {
   illustrationKey: string;
+  icon?: string;
   emoji?: string;
   size?: 'sm' | 'md' | 'lg';
 }
 
+const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+  Bus,
+  Car,
+  Bike,
+  Train,
+  Plane,
+  Ship,
+  Home,
+  Bed,
+  Utensils,
+  Apple,
+  Users,
+  Sun,
+  CloudRain,
+  Trees,
+  BookOpen,
+  Footprints,
+  Building,
+  Flame,
+  Fish,
+  Baby,
+  Coffee,
+  Heart,
+  Smile,
+  ShoppingBag,
+  Briefcase,
+  Music,
+  Sparkles,
+  Moon,
+  Eye,
+  Activity,
+  Compass,
+  Key,
+  Layers,
+  Milestone,
+  Truck,
+  Armchair,
+  DoorClosed,
+  Volume2,
+  MessageCircle,
+  Wind,
+  Mountain,
+  Globe,
+  RotateCcw,
+  TrendingUp,
+  TrendingDown,
+  User,
+  Lamp,
+  Pencil,
+  Check,
+  X,
+  // Common lowercase aliases
+  bus: Bus,
+  car: Car,
+  bicycle: Bike,
+  train: Train,
+  airplane: Plane,
+  boat: Ship,
+  house: Home,
+  door: DoorClosed,
+  bed: Bed,
+  chair: Armchair,
+  food: Utensils,
+  water: Coffee,
+  tree: Trees,
+  sun: Sun,
+  rain: CloudRain,
+  book: BookOpen,
+  child: Baby,
+  chat: MessageCircle,
+  welcome: Smile,
+  heart: Heart
+};
+
 export const WordIllustration: React.FC<WordIllustrationProps> = ({
   illustrationKey,
+  icon,
   emoji = '🖐🏽',
   size = 'lg'
 }) => {
   const sizeClasses = {
-    sm: 'w-12 h-12 text-[32px]',
-    md: 'w-28 h-28 text-[76px]',
-    lg: 'w-36 h-36 text-[98px]'
+    sm: 'w-10 h-10 text-[26px]',
+    md: 'w-24 h-24 text-[64px]',
+    lg: 'w-32 h-32 text-[80px]'
   }[size];
 
-  if (illustrationKey === 'hand') {
-    const svgSize = size === 'sm' ? 44 : size === 'md' ? 108 : 144;
+  const iconSizes = {
+    sm: 'w-5 h-5 stroke-[2.2]',
+    md: 'w-12 h-12 stroke-[2]',
+    lg: 'w-16 h-16 stroke-[1.8]'
+  }[size];
+
+  // Specific custom vector illustration for "Hand"
+  if (illustrationKey === 'hand' || illustrationKey === 'word-hand') {
+    const svgSize = size === 'sm' ? 40 : size === 'md' ? 96 : 130;
     return (
       <div className="inline-flex items-center justify-center select-none shrink-0">
         <svg
@@ -27,7 +162,7 @@ export const WordIllustration: React.FC<WordIllustrationProps> = ({
           viewBox="0 0 140 140"
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
-          className="drop-shadow-md max-w-full h-auto"
+          className="drop-shadow-sm max-w-full h-auto"
         >
           <defs>
             <linearGradient id="palmGrad" x1="35" y1="15" x2="105" y2="128" gradientUnits="userSpaceOnUse">
@@ -40,7 +175,6 @@ export const WordIllustration: React.FC<WordIllustrationProps> = ({
               <stop offset="100%" stopColor="#9E4B22" stopOpacity="0.12" />
             </linearGradient>
           </defs>
-          {/* Single continuous closed path for natural open hand without any fill gaps */}
           <path
             d="M41 74
                L41 34 C41 29.5 44.6 26 49 26 C53.4 26 57 29.5 57 34
@@ -81,15 +215,26 @@ export const WordIllustration: React.FC<WordIllustrationProps> = ({
             strokeWidth="2.3"
             strokeLinecap="round"
           />
-          <line x1="45" y1="46" x2="53" y2="46" stroke="#B45E32" strokeOpacity="0.32" strokeWidth="1.8" strokeLinecap="round" />
-          <line x1="63" y1="39" x2="71" y2="39" stroke="#B45E32" strokeOpacity="0.32" strokeWidth="1.8" strokeLinecap="round" />
-          <line x1="81" y1="43" x2="89" y2="43" stroke="#B45E32" strokeOpacity="0.32" strokeWidth="1.8" strokeLinecap="round" />
-          <line x1="99" y1="53" x2="106" y2="53" stroke="#B45E32" strokeOpacity="0.32" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
       </div>
     );
   }
 
+  // Check for Lucide Icon Match
+  const IconComponent = (icon && ICON_MAP[icon]) || ICON_MAP[illustrationKey];
+  if (IconComponent) {
+    return (
+      <div
+        className={`${sizeClasses} rounded-2xl bg-[#E8F5E9] text-[#157A4C] inline-flex items-center justify-center select-none shadow-xs shrink-0`}
+        role="img"
+        aria-label={illustrationKey}
+      >
+        <IconComponent className={iconSizes} />
+      </div>
+    );
+  }
+
+  // Fallback to Emoji
   return (
     <div
       className={`${sizeClasses} inline-flex items-center justify-center select-none leading-none drop-shadow-sm shrink-0`}

@@ -183,6 +183,9 @@ function rememberCompletedQuestion(lessonId, recordingId, englishWord, writeLock
   if (!targetId && englishWord) {
     targetId = PROMPT_ENGLISH_TO_ID[String(englishWord).trim().toLowerCase()] || '';
   }
+  if (!targetId && lessonId && typeof lessonId === 'string' && /^[a-zA-Z0-9_-]{2,80}$/.test(lessonId) && !lessonId.startsWith('test-')) {
+    targetId = lessonId;
+  }
   if (!targetId) return;
   if (completedQuestions()[targetId]) return;
   const lock = LockService.getScriptLock();

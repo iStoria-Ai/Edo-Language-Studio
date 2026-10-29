@@ -34,6 +34,11 @@ import {
   INITIAL_EDO_ENTRIES,
   TEACH_QUESTION_IDS
 } from './services/storageService';
+import {
+  getAllVocabularyPrompts,
+  normalizeEnglish,
+  fetchMoreOnlineVocabulary
+} from './services/vocabularyService';
 import { fetchCommunityLibrary, readCommunityCache, mergeCommunityEntries, readSpellingDrafts, queueCommunitySpelling, syncSpellingDrafts, uploadWrittenContribution, CommunitySnapshot } from './services/communityLibrary';
 import { LocalLibrary } from './services/libraryProtection';
 import { SCREEN_BADGE_MAP } from './components/ScreenBadgeHeader';
@@ -196,6 +201,35 @@ export const App: React.FC = () => {
     await refreshLibrary();
   };
 
+  // Continuous background discovery of online English vocabulary
+  const [, setOnlineVocabTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const discoverOnlineVocabulary = async () => {
+      const allKnown = new Set<string>([
+        ...sharedEntries.map((e) => e.english),
+        ...getAllVocabularyPrompts().map((e) => e.english)
+      ]);
+
+      try {
+        const fresh = await fetchMoreOnlineVocabulary(allKnown);
+        if (!cancelled && fresh.length > 0) {
+          setOnlineVocabTick((v) => v + 1);
+        }
+      } catch {
+        // Silently continue if offline
+      }
+    };
+
+    if (activeSection === 'teach' || activeSection === 'dashboard') {
+      const timer = window.setTimeout(discoverOnlineVocabulary, 1200);
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+      };
+    }
+  }, [activeSection, sharedEntries.length]);
+
   // Teach Edo must show ONLY words or phrases that have not yet received a valid saved voice recording
   const answeredPromptIds = new Set<string>([
     ...(community?.answeredQuestionIds || []),
@@ -204,14 +238,27 @@ export const App: React.FC = () => {
       .map((e) => e.sourceLessonId || e.id)
   ]);
 
-  const teachQuestions: EdoEntry[] = TEACH_QUESTION_IDS
-    .map((id) => {
-      const prompt = INITIAL_EDO_ENTRIES.find((e) => e.id === id)!;
+  const answeredNormalizedEnglish = new Set<string>(
+    sharedEntries
+      .filter((e) => (e.hasAudio && !e.isSampleData) || Boolean(e.cloudAudioFileId))
+      .map((e) => normalizeEnglish(e.english))
+  );
+
+  // All catalog prompts (starter 130+ + cached online vocabulary)
+  const allPrompts = getAllVocabularyPrompts();
+
+  // Custom user prompts created in TeachSomethingElse
+  const customPrompts = entries.filter((e) => e.id.startsWith('custom-') && !e.hasAudio);
+
+  const fullPromptBank = [...allPrompts, ...customPrompts];
+
+  const teachQuestions: EdoEntry[] = fullPromptBank
+    .map((prompt) => {
       const matched = sharedEntries.find(
         (e) =>
-          e.id === id ||
-          e.sourceLessonId === id ||
-          e.english.trim().toLowerCase() === prompt.english.trim().toLowerCase()
+          e.id === prompt.id ||
+          e.sourceLessonId === prompt.id ||
+          normalizeEnglish(e.english) === normalizeEnglish(prompt.english)
       );
       return matched || prompt;
     })
@@ -219,6 +266,7 @@ export const App: React.FC = () => {
       const isAnswered =
         answeredPromptIds.has(q.id) ||
         Boolean(q.sourceLessonId && answeredPromptIds.has(q.sourceLessonId)) ||
+        answeredNormalizedEnglish.has(normalizeEnglish(q.english)) ||
         Boolean((q.hasAudio && !q.isSampleData) || q.cloudAudioFileId);
       return !isAnswered;
     });

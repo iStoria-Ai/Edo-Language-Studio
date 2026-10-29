@@ -49,7 +49,9 @@ export interface EdoEntry {
   english: string;
   edoText?: string;
   category: EntryCategory;
+  topic?: string;
   illustrationKey: string;
+  icon?: string;
   emoji: string;
   hasAudio: boolean;
   audioDataUrl?: string;

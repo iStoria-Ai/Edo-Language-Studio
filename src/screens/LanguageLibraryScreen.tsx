@@ -535,6 +535,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 <div className="w-10 h-10 rounded-xl bg-[#FAF6EC] flex items-center justify-center shrink-0">
                   <WordIllustration
                     illustrationKey={entry.illustrationKey}
+                    icon={entry.icon}
                     emoji={entry.emoji}
                     size="sm"
                   />
@@ -635,6 +636,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 <div className="w-10 h-10 rounded-xl bg-white border border-[#E0D8C6] flex items-center justify-center shrink-0 shadow-2xs overflow-hidden">
                   <WordIllustration
                     illustrationKey={selectedEntry.illustrationKey}
+                    icon={selectedEntry.icon}
                     emoji={selectedEntry.emoji}
                     size="sm"
                   />

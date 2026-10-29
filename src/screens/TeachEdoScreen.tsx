@@ -380,23 +380,21 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     updateStep('prompt');
   };
 
-  const progressPercent = Math.min(100, Math.round(((safeIndex + 1) / totalQuestions) * 100));
-
   if (stepState === 'prompt' && !isRecording && !recordedAudioUrl && questions.length === 0) {
     return (
       <div className="edo-screen">
         <StudioHeader theme="green" sectionLabel="Teach Edo" rightAction="close" onRightAction={onFinishForNow} />
-        <div className="p-6 text-center space-y-4" role="status">
+        <div className="p-6 text-center space-y-4 my-auto" role="status">
           <div className="w-14 h-14 rounded-full bg-[#E8F5E9] text-[#157A4C] flex items-center justify-center mx-auto">
-            <CheckCircle2 className="w-7 h-7" />
+            <Sparkles className="w-7 h-7" />
           </div>
-          <h1 className="text-xl font-bold text-[#1A241D]">All studio prompt words have been recorded!</h1>
+          <h1 className="text-xl font-bold text-[#1A241D]">Loading more everyday words…</h1>
           <p className="text-sm text-[#556058] max-w-sm mx-auto leading-relaxed">
-            Every word in the studio prompt bank has received an Edo pronunciation recording. You can help add missing Edo spellings or teach a brand new word!
+            You have contributed to all currently available words! The studio is discovering more vocabulary in the background. You can also teach a custom word or phrase of your choice right now.
           </p>
           <div className="pt-2 flex flex-col gap-2.5 max-w-xs mx-auto">
             <button type="button" className="edo-primary-btn" onClick={onOpenTeachSomethingElse}>
-              Teach Something Else
+              Teach a Custom Word
             </button>
             <button type="button" className="edo-secondary-btn" onClick={onFinishForNow}>
               Back to Dashboard
@@ -418,27 +416,20 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
         onLogoClick={() => { if (confirmLeave()) onFinishForNow(); }}
       />
 
-      {/* Consistent Progress Bar (Visible on States 3, 4, 5) */}
+      {/* Continuous Exploration Sub-header without fixed lesson count */}
       {stepState !== 'completed' && (
-        <div className="w-full px-5 pt-0.5 pb-1.5 shrink-0">
-          <div className="flex items-center justify-between text-[13.5px] text-[#4E5B52] font-semibold mb-1">
-            <span>
-              {answeredIds?.size || 0} answered across the community · {questions.filter(question => !answeredIds?.has(question.id) && !(question.hasAudio && !question.isSampleData)).length} waiting
-            </span>
-            <button
-              type="button"
-              onClick={() => { if (confirmLeave()) onOpenTeachSomethingElse(); }}
-              className="text-[#157A4C] hover:underline font-bold text-[13px]"
-            >
-              + Teach something else
-            </button>
+        <div className="w-full px-5 pt-1 pb-1.5 shrink-0 flex items-center justify-between text-[13px] text-[#4E5B52] font-semibold">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-[#157A4C] animate-pulse" />
+            <span>Everyday English → Edo Voice</span>
           </div>
-          <div className="w-full h-2 rounded-full bg-[#E3DEC9] overflow-hidden">
-            <div
-              className="h-full bg-[#157A4C] rounded-full transition-all duration-300"
-              style={{ width: `${Math.max(18, progressPercent)}%` }}
-            />
-          </div>
+          <button
+            type="button"
+            onClick={() => { if (confirmLeave()) onOpenTeachSomethingElse(); }}
+            className="text-[#157A4C] hover:underline font-bold text-[13px]"
+          >
+            + Teach custom word
+          </button>
         </div>
       )}
 
@@ -460,6 +451,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
             <div className="relative w-full flex items-center justify-center mt-1.5 mb-1 min-h-[112px]">
               <WordIllustration
                 illustrationKey={currentQuestion.illustrationKey}
+                icon={currentQuestion.icon}
                 emoji={currentQuestion.emoji}
                 size={stepState === 'writing' ? 'md' : 'lg'}
               />
