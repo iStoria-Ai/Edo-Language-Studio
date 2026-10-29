@@ -186,8 +186,9 @@ export const App: React.FC = () => {
       processBackgroundUploadQueue(
         () => entriesRef.current,
         async (entryId, cloudAudioId, cloudMetaId) => {
-          // Success & Verified: update entry, safely clear local audio bytes, retain lesson record
-          const updated = entriesRef.current.map(item => {
+          // Read current persisted state for each queue item; prior uploads may have changed it.
+          const library = await loadLibrary();
+          const updated = library.entries.map(item => {
             if (item.id !== entryId) return item;
             return {
               ...item,
@@ -200,11 +201,13 @@ export const App: React.FC = () => {
               syncError: undefined
             };
           });
-          await persistUpdatedEntries(updated);
+          await saveEntries(updated, library.entries);
+          await refreshLibrary();
         },
         async (entryId, errorMsg) => {
           // Failure: KEEP local audio intact, record error
-          const updated = entriesRef.current.map(item => {
+          const library = await loadLibrary();
+          const updated = library.entries.map(item => {
             if (item.id !== entryId) return item;
             return {
               ...item,
@@ -213,7 +216,8 @@ export const App: React.FC = () => {
               syncError: errorMsg
             };
           });
-          await persistUpdatedEntries(updated);
+          await saveEntries(updated, library.entries);
+          await refreshLibrary();
         },
         (entryId, status) => {
           setEntries(prev => prev.map(item => item.id === entryId ? { ...item, syncStatus: status } : item));
