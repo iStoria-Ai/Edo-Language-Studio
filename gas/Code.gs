@@ -36,16 +36,22 @@ const ALLOWED_MIME_TYPES = {
   'audio/mpeg': 'mp3'
 };
 
+function hashSha256(str) {
+  if (typeof str !== 'string' || !str) return '';
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, str, Utilities.Charset.UTF_8).map(function(byte) { return ('0' + ((byte + 256) % 256).toString(16)).slice(-2); }).join('');
+}
+
 /**
  * Validates contributor authorization and resolves identity & role.
  *
  * 1. If a valid token matching CONTRIBUTOR_DIRECTORY is provided, returns registered profile.
- * 2. If no token is provided:
+ * 2. If action is 'admin_lock_entry', verifies either admin token or trusted approver code.
+ * 3. If no token is provided:
  *    - For public/community actions ('upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling'),
  *      validates rate limits via CacheService and grants 'community_contributor' role.
  *    - For administrative actions, strictly requires a verified 'admin' token.
  */
-function getVerifiedContributor(providedToken, action) {
+function getVerifiedContributor(providedToken, action, payload) {
   const properties = PropertiesService.getScriptProperties();
   const rawDirectory = properties.getProperty('CONTRIBUTOR_DIRECTORY');
 
@@ -69,6 +75,46 @@ function getVerifiedContributor(providedToken, action) {
         }
       } catch (e) {
         Logger.log('AUTH ERROR: Unable to parse CONTRIBUTOR_DIRECTORY JSON: ' + e.toString());
+      }
+    }
+  }
+
+  // Trusted Approver authorization for admin_lock_entry (Secret Approval Code)
+  if (action === 'admin_lock_entry') {
+    const cache = CacheService.getScriptCache();
+    const failAttemptsKey = 'rate_approval_fail_attempts';
+    const failedCount = parseInt(cache.get(failAttemptsKey) || '0', 10);
+    if (failedCount >= 5) {
+      Logger.log('RATE LIMIT EXCEEDED: Too many failed approval attempts.');
+      return { isRateLimited: true, isApprovalRateLimit: true };
+    }
+
+    const candidate = String((payload && payload.approvalCode) || providedToken || '').trim();
+    if (candidate.length >= 4) {
+      const configuredHash = properties.getProperty('TRUSTED_APPROVAL_CODE_HASH');
+      const configuredCode = properties.getProperty('TRUSTED_APPROVAL_CODE');
+
+      let matched = false;
+      if (configuredHash || configuredCode) {
+        const candidateHash = hashSha256(candidate);
+        if (configuredHash && candidateHash.toLowerCase() === configuredHash.trim().toLowerCase()) {
+          matched = true;
+        } else if (configuredCode && (candidate === configuredCode.trim() || candidateHash.toLowerCase() === configuredCode.trim().toLowerCase())) {
+          matched = true;
+        }
+      }
+
+      if (matched) {
+        cache.remove(failAttemptsKey);
+        return {
+          id: 'trusted-speaker',
+          name: 'Trusted Edo Speaker',
+          role: 'trusted_approver',
+          isCommunity: false
+        };
+      } else {
+        // Increment failed attempts on wrong approval code
+        cache.put(failAttemptsKey, String(failedCount + 1), 900); // 15-minute lock after 5 failures
       }
     }
   }
@@ -301,19 +347,23 @@ function doPost(e) {
     const authToken = payload.authToken || '';
 
     // 1. Contributor Identity Resolution & Abuse Gatekeeping
-    const verifiedContributor = getVerifiedContributor(authToken, action);
+    const verifiedContributor = getVerifiedContributor(authToken, action, payload);
     if (!verifiedContributor) {
       return createJsonResponse({
         status: 'error',
-        code: 'UNAUTHORIZED',
-        message: 'Invalid contributor access token or unauthorized action.'
+        code: action === 'admin_lock_entry' || action === 'admin_unlock_entry' || action === 'admin_delete_entry' ? 'UNAUTHORIZED_ADMIN' : 'UNAUTHORIZED',
+        message: action === 'admin_lock_entry'
+          ? 'Invalid approval code or administrator token.'
+          : 'Invalid contributor access token or unauthorized action.'
       });
     }
     if (verifiedContributor.isRateLimited) {
       return createJsonResponse({
         status: 'error',
         code: 'RATE_LIMIT_EXCEEDED',
-        message: 'Community upload limit reached for the current window. Please retry in a few minutes.'
+        message: verifiedContributor.isApprovalRateLimit
+          ? 'Too many incorrect approval attempts. Please wait 15 minutes before trying again.'
+          : 'Community upload limit reached for the current window. Please retry in a few minutes.'
       });
     }
 
@@ -893,11 +943,11 @@ function doPost(e) {
 
     // ACTION F: Admin Lock Entry (Approval & Protection)
     if (action === 'admin_lock_entry') {
-      if (verifiedContributor.role !== 'admin') {
+      if (verifiedContributor.role !== 'admin' && verifiedContributor.role !== 'trusted_approver') {
         return createJsonResponse({
           status: 'error',
           code: 'UNAUTHORIZED_ADMIN',
-          message: 'Admin authorization required to lock contributions.'
+          message: 'Admin authorization or valid trusted approval code required to lock contributions.'
         });
       }
       const metadataFileId = String(payload.metadataFileId || '').trim();
@@ -923,6 +973,7 @@ function doPost(e) {
       meta.approvedBy = {
         id: verifiedContributor.id,
         name: verifiedContributor.name,
+        role: verifiedContributor.role,
         approvedAt: new Date().toISOString()
       };
       meta.updatedAt = new Date().toISOString();
@@ -936,13 +987,13 @@ function doPost(e) {
       });
     }
 
-    // ACTION G: Admin Unlock Entry
+    // ACTION G: Admin Unlock Entry (Strictly requires owner admin token)
     if (action === 'admin_unlock_entry') {
       if (verifiedContributor.role !== 'admin') {
         return createJsonResponse({
           status: 'error',
           code: 'UNAUTHORIZED_ADMIN',
-          message: 'Admin authorization required to unlock contributions.'
+          message: 'Owner administrator authorization required to unlock contributions. Trusted approvers cannot unlock records.'
         });
       }
       const metadataFileId = String(payload.metadataFileId || '').trim();
@@ -1045,7 +1096,7 @@ function doPost(e) {
         return createJsonResponse({
           status: 'error',
           code: 'UNAUTHORIZED_ADMIN',
-          message: 'Admin authorization required to delete contributions.'
+          message: 'Owner administrator authorization required to delete contributions. Trusted approvers cannot delete records.'
         });
       }
       const metadataFileId = String(payload.metadataFileId || '').trim();

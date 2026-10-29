@@ -491,6 +491,90 @@ function runTests() {
   assert.equal(adminUnlock.reviewStatus, 'pending_approval');
   console.log('✓ Admin successfully unlocked entry.');
 
+  // --- Step 11b: Testing Trusted Speaker Secret Approval Code System ---
+  console.log('--- Step 11b: Testing Trusted Speaker Secret Approval Code System ---');
+  const crypto = require('node:crypto');
+  const trustedCode = 'EdoElder2026!';
+  const trustedCodeHash = crypto.createHash('sha256').update(trustedCode).digest('hex');
+  sandbox.PropertiesService.getScriptProperties().setProperty('TRUSTED_APPROVAL_CODE_HASH', trustedCodeHash);
+
+  // 1. Trusted speaker approval locks the lesson
+  const trustedLock = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_lock_entry',
+      approvalCode: trustedCode,
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(trustedLock.status, 'success');
+  assert.equal(trustedLock.reviewStatus, 'approved_locked');
+  assert.equal(trustedLock.approvedBy.role, 'trusted_approver');
+  assert.equal(trustedLock.approvedBy.name, 'Trusted Edo Speaker');
+  console.log('✓ Trusted speaker successfully approved and locked lesson using secret approval code.');
+
+  // 2. Trusted speaker CANNOT unlock the lesson (restricted strictly to owner admin)
+  const trustedUnlockAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_unlock_entry',
+      authToken: trustedCode,
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(trustedUnlockAttempt.code, 'UNAUTHORIZED_ADMIN');
+  console.log('✓ Destructive unlock action correctly blocked for trusted approver.');
+
+  // 3. Trusted speaker CANNOT delete the lesson (restricted strictly to owner admin)
+  const trustedDeleteAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_delete_entry',
+      authToken: trustedCode,
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(trustedDeleteAttempt.code, 'UNAUTHORIZED_ADMIN');
+  console.log('✓ Destructive delete action correctly blocked for trusted approver.');
+
+  // 4. Rate-limiting on incorrect approval code guessing attempts
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const badAttempt = JSON.parse(sandbox.doPost({
+      postData: { contents: JSON.stringify({
+        action: 'admin_lock_entry',
+        approvalCode: 'WrongSecretGuess' + attempt,
+        metadataFileId: targetMetaFileId
+      }) }
+    }).getContent());
+    assert.equal(badAttempt.code, 'UNAUTHORIZED_ADMIN');
+  }
+  // 5th failed attempt should trigger rate limiting lockout
+  sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_lock_entry',
+      approvalCode: 'WrongSecretGuess4',
+      metadataFileId: targetMetaFileId
+    }) }
+  });
+  const lockedOutAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_lock_entry',
+      approvalCode: 'WrongSecretGuess5',
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(lockedOutAttempt.code, 'RATE_LIMIT_EXCEEDED');
+  assert.match(lockedOutAttempt.message, /Too many incorrect approval attempts/);
+  console.log('✓ Guessing protection: Rate limiting locked out invalid approval attempts.');
+
+  // Reset approval fail cache and unlock entry with owner admin token
+  sandbox.CacheService.getScriptCache().remove('rate_approval_fail_attempts');
+  const finalUnlock = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_unlock_entry',
+      authToken: adminToken,
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(finalUnlock.status, 'success');
+
   // 12. Auto-Lock After 5 Distinct Verified Listens & Anonymous Deduplication
   console.log('--- Step 12: Testing 5-Listener Auto-Lock & Listener Deduplication ---');
   const autoLockUpload = JSON.parse(sandbox.doPost({
