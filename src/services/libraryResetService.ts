@@ -169,10 +169,11 @@ export async function executeOneTimeLibraryReset(snapshot: CommunitySnapshot): P
     throw new Error('Authoritative gateway snapshot required for library reset.');
   }
 
-  // 1. Clear legacy localStorage keys
+  // 1. Clear legacy localStorage keys and any stale gateway overrides
   if (typeof localStorage !== 'undefined') {
     try {
       localStorage.removeItem(LEGACY_STORAGE_KEY);
+      localStorage.removeItem('edo_gateway_url_v1');
     } catch (_) {}
   }
 

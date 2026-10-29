@@ -69,7 +69,11 @@ export function setStoredContributorToken(token: string): void {
  */
 export function getGatewayUrl(): string {
   try {
-    return localStorage.getItem(GATEWAY_URL_STORAGE_KEY) || DEFAULT_GATEWAY_URL;
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(GATEWAY_URL_STORAGE_KEY) : null;
+    if (stored && stored.startsWith('https://script.google.com/macros/s/')) {
+      return stored.trim();
+    }
+    return DEFAULT_GATEWAY_URL;
   } catch {
     return DEFAULT_GATEWAY_URL;
   }
@@ -938,12 +942,21 @@ export interface DriveCollectionStats {
   needsHelpCount: number;
 }
 
+function createTimeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
 /** Fetch current Drive contents; never substitute device counts for a failed cloud request. */
 export async function fetchDriveCollectionStats(url = getGatewayUrl()): Promise<{ stats: DriveCollectionStats; checkedAt: string }> {
   const response = await fetch(url, {
     method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ action: 'get_collection_stats', authToken: getStoredContributorToken() }),
-    redirect: 'follow', mode: 'cors', cache: 'no-store', signal: AbortSignal.timeout(20000)
+    redirect: 'follow', mode: 'cors', cache: 'no-store', signal: createTimeoutSignal(20000)
   });
   if (!response.ok) throw new Error(`Google Drive returned HTTP ${response.status}.`);
   const data = await response.json();

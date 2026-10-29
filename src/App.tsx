@@ -60,6 +60,13 @@ import { LanguageLibraryScreen } from './screens/LanguageLibraryScreen';
 import { AiProgressScreen } from './screens/AiProgressScreen';
 import { TeachSomethingElseScreen } from './screens/TeachSomethingElseScreen';
 
+function safeUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'uid-' + Math.random().toString(36).substring(2, 10) + '-' + Date.now().toString(36);
+}
+
 export const App: React.FC = () => {
   const [libraryInfo, setLibraryInfo] = useState<LocalLibrary | null>(null);
   const [entries, setEntries] = useState<EdoEntry[]>(INITIAL_EDO_ENTRIES);
@@ -232,19 +239,42 @@ export const App: React.FC = () => {
     }
   }, [activeSection, sharedEntries.length]);
 
-  // Teach Edo must show ONLY words or phrases that have not yet received a valid saved voice recording
-  const answeredPromptIds = new Set<string>([
-    ...(community?.answeredQuestionIds || []),
-    ...sharedEntries
-      .filter((e) => (e.hasAudio && !e.isSampleData) || Boolean(e.cloudAudioFileId))
+  // Teach Edo must show ONLY words or phrases that have not yet received a valid saved voice recording.
+  // A question is answered ONLY if an active recording exists in authoritative Google Drive
+  // or is currently in the local device upload queue.
+  const activeCloudLessonIds = new Set<string>(
+    (community?.entries || [])
+      .filter((e) => (e.hasAudio || Boolean(e.cloudAudioFileId)) && Boolean(e.cloudMetadataFileId))
       .map((e) => e.sourceLessonId || e.id)
-  ]);
+  );
 
-  const answeredNormalizedEnglish = new Set<string>(
-    sharedEntries
-      .filter((e) => (e.hasAudio && !e.isSampleData) || Boolean(e.cloudAudioFileId))
+  const activeCloudEnglish = new Set<string>(
+    (community?.entries || [])
+      .filter((e) => (e.hasAudio || Boolean(e.cloudAudioFileId)) && Boolean(e.cloudMetadataFileId))
       .map((e) => normalizeEnglish(e.english))
   );
+
+  const localPendingIds = new Set<string>(
+    entries
+      .filter((e) => !e.isSampleData && e.hasAudio && Boolean(e.audioDataUrl) && e.syncStatus === 'pending_upload')
+      .map((e) => e.sourceLessonId || e.id)
+  );
+
+  const localPendingEnglish = new Set<string>(
+    entries
+      .filter((e) => !e.isSampleData && e.hasAudio && Boolean(e.audioDataUrl) && e.syncStatus === 'pending_upload')
+      .map((e) => normalizeEnglish(e.english))
+  );
+
+  const answeredPromptIds = new Set<string>([
+    ...activeCloudLessonIds,
+    ...localPendingIds
+  ]);
+
+  const answeredNormalizedEnglish = new Set<string>([
+    ...activeCloudEnglish,
+    ...localPendingEnglish
+  ]);
 
   // All catalog prompts (starter 130+ + cached online vocabulary)
   const allPrompts = getAllVocabularyPrompts();
@@ -418,6 +448,9 @@ export const App: React.FC = () => {
     const existing = entries.find(item => item.id === entryId);
     if (existing?.audioDataUrl && !existing.isSampleData) throw new Error("This lesson already has a saved recording. Find it in the Language Library.");
 
+    // Look up prompt metadata from fullPromptBank if not already in local entries
+    const promptInfo = fullPromptBank.find(p => p.id === entryId) || existing;
+
     // 1. Immediately save recording to local device storage (<20ms)
     const persistedUri = await saveAudioFileLocally(entryId, audioDataUrl);
     const translation = edoText?.trim() || (!existing?.isSampleData ? existing?.edoText : undefined);
@@ -425,13 +458,13 @@ export const App: React.FC = () => {
     const nowIso = new Date().toISOString();
 
     const entryToSave: EdoEntry = {
-      ...(existing || {
-        id: entryId,
-        english: 'Lesson',
-        category: 'word' as const,
-        illustrationKey: 'mic',
-        emoji: '🎙️'
-      }),
+      id: entryId,
+      english: promptInfo?.english || existing?.english || 'Lesson',
+      category: promptInfo?.category || existing?.category || ('word' as const),
+      illustrationKey: promptInfo?.illustrationKey || existing?.illustrationKey || 'chat',
+      imageUrl: promptInfo?.imageUrl || existing?.imageUrl,
+      emoji: promptInfo?.emoji || existing?.emoji || '🗣️',
+      ...(existing || {}),
       hasAudio: true,
       createdAt: existing?.createdAt || nowIso,
       edoText: translation,
@@ -443,8 +476,11 @@ export const App: React.FC = () => {
       updatedAt: nowIso
     };
 
-    // 2. Persist locally first: takes <20ms, completely local!
-    const updated = entries.map((item) => (item.id === entryId ? entryToSave : item));
+    // 2. Persist locally: update existing or append newly taught prompt to entries!
+    const existingIndex = entries.findIndex((item) => item.id === entryId);
+    const updated = existingIndex >= 0
+      ? entries.map((item) => (item.id === entryId ? entryToSave : item))
+      : [...entries, entryToSave];
     await persistUpdatedEntries(updated);
 
     const savedLibrary = await loadLibrary();
@@ -464,18 +500,35 @@ export const App: React.FC = () => {
 
   // Save Optional Writing in Teach Edo (Screen 5 -> Screen 6)
   const handleSaveWritingForContribution = async (entryId: string, edoText: string) => {
-    const updated = entries.map((item) => {
-      if (item.id !== entryId) return item;
-      return {
-        ...item,
-        edoText,
-        isSampleData: false,
-        status: 'awaiting_review' as const,
-        updatedAt: new Date().toISOString(),
-        notes: 'Voice & Edo writing contributed on this device (awaiting community review)'
-      };
-    });
+    const existing = entries.find((item) => item.id === entryId);
+    const promptInfo = fullPromptBank.find((p) => p.id === entryId) || existing;
+    const nowIso = new Date().toISOString();
+
+    const entryToSave: EdoEntry = {
+      id: entryId,
+      english: promptInfo?.english || existing?.english || 'Lesson',
+      category: promptInfo?.category || existing?.category || 'word',
+      illustrationKey: promptInfo?.illustrationKey || existing?.illustrationKey || 'chat',
+      imageUrl: promptInfo?.imageUrl || existing?.imageUrl,
+      emoji: promptInfo?.emoji || existing?.emoji || '🗣️',
+      ...(existing || {}),
+      hasAudio: existing?.hasAudio ?? true,
+      edoText: edoText.trim(),
+      isSampleData: false,
+      status: 'awaiting_review' as const,
+      updatedAt: nowIso,
+      notes: 'Voice & Edo writing contributed on this device (awaiting community review)'
+    };
+
+    const existingIndex = entries.findIndex((item) => item.id === entryId);
+    const updated = existingIndex >= 0
+      ? entries.map((item) => (item.id === entryId ? entryToSave : item))
+      : [...entries, entryToSave];
     await persistUpdatedEntries(updated);
+
+    if (existing?.cloudMetadataFileId) {
+      await saveSharedSpelling(entryId, edoText);
+    }
   };
 
   const handleUpdateLibraryEntry = async (
@@ -521,17 +574,29 @@ export const App: React.FC = () => {
 
   // Skip Writing in Teach Edo -> Keep Voice as "Needs Writing" (Screen 5 -> Screen 6)
   const handleSkipWritingKeepVoice = async (entryId: string) => {
-    const updated = entries.map((item) => {
-      if (item.id !== entryId) return item;
-      return {
-        ...item,
-        edoText: undefined,
-        isSampleData: false,
-        status: 'needs_writing' as const,
-        updatedAt: new Date().toISOString(),
-        notes: 'Voice recorded on this device — needs Edo writing in Help Others'
-      };
-    });
+    const existing = entries.find((item) => item.id === entryId);
+    const promptInfo = fullPromptBank.find((p) => p.id === entryId) || existing;
+    const nowIso = new Date().toISOString();
+
+    const entryToSave: EdoEntry = {
+      id: entryId,
+      english: promptInfo?.english || existing?.english || 'Lesson',
+      category: promptInfo?.category || existing?.category || 'word',
+      illustrationKey: promptInfo?.illustrationKey || existing?.illustrationKey || 'chat',
+      imageUrl: promptInfo?.imageUrl || existing?.imageUrl,
+      emoji: promptInfo?.emoji || existing?.emoji || '🗣️',
+      ...(existing || {}),
+      hasAudio: existing?.hasAudio ?? true,
+      edoText: undefined,
+      isSampleData: false,
+      status: 'needs_writing' as const,
+      updatedAt: nowIso
+    };
+
+    const existingIndex = entries.findIndex((item) => item.id === entryId);
+    const updated = existingIndex >= 0
+      ? entries.map((item) => (item.id === entryId ? entryToSave : item))
+      : [...entries, entryToSave];
     await persistUpdatedEntries(updated);
   };
 
@@ -582,7 +647,10 @@ export const App: React.FC = () => {
       notes: 'Completed via Help Others (pronunciation attached to existing Edo writing)'
     };
 
-    const updated = entries.map((item) => (item.id === entryId ? entryToSave : item));
+    const existingIndex = entries.findIndex((item) => item.id === entryId);
+    const updated = existingIndex >= 0
+      ? entries.map((item) => (item.id === entryId ? entryToSave : item))
+      : [...entries, entryToSave];
     await persistUpdatedEntries(updated);
 
     const saved = await loadLibrary();
@@ -603,7 +671,7 @@ export const App: React.FC = () => {
     if (entries.some(item => item.english.trim().toLowerCase() === params.englishText.trim().toLowerCase() && !item.isSampleData && (item.audioDataUrl || item.edoText))) {
       throw new Error("This English lesson already exists. Edit it in the Language Library.");
     }
-    const newId = `custom-${crypto.randomUUID()}`;
+    const newId = `custom-${safeUUID()}`;
     let persistedAudio: string | undefined = undefined;
     if (params.audioDataUrl) {
       persistedAudio = await saveAudioFileLocally(newId, params.audioDataUrl);

@@ -24,9 +24,25 @@ function isSyntheticTest(entry: { id?: string; recordingId?: string; english?: s
   );
 }
 
+function createTimeoutSignal(ms: number): AbortSignal {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms);
+  return controller.signal;
+}
+
 export async function communityRequest(payload: Record<string, unknown>) {
-  const response = await fetch(getGatewayUrl(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ ...payload, authToken: getStoredContributorToken() }), redirect: 'follow', mode: 'cors', cache: 'no-store', signal: AbortSignal.timeout(30000) });
+  const response = await fetch(getGatewayUrl(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ ...payload, authToken: getStoredContributorToken() }),
+    redirect: 'follow',
+    mode: 'cors',
+    cache: 'no-store',
+    signal: createTimeoutSignal(30000)
+  });
   if (!response.ok) throw new Error(`Google Drive returned HTTP ${response.status}`);
   const data = await response.json();
   if (data.status !== 'success') throw new Error(data.message || data.code || 'Google Drive request failed');

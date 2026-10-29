@@ -70,3 +70,4 @@ for (const item of vocab) {
 
 console.log(`✓ All ${verifiedCount} starter items verified with real, locally bundled pictures.`);
 console.log('=== ALL REAL VOCABULARY PICTURES TESTS PASSED! ===\n');
+
