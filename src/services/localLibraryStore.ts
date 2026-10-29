@@ -41,3 +41,40 @@ export async function writeLibrarySnapshot(key: string, value: string): Promise<
     tx.onerror = () => reject(tx.error || new Error('Unable to save protected local storage.'));
   }).finally(() => db.close());
 }
+
+export async function deleteLibrarySnapshot(key: string): Promise<void> {
+  try { await Preferences.remove({ key }); } catch (_) {}
+  if (usesIndexedDB()) {
+    try {
+      const db = await database();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readwrite');
+        tx.objectStore(STORE).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error || new Error('Delete failed'));
+        tx.onerror = () => reject(tx.error || new Error('Delete failed'));
+      }).finally(() => db.close());
+    } catch (_) {}
+  }
+}
+
+export async function listLibrarySnapshotKeys(): Promise<string[]> {
+  const keysSet = new Set<string>();
+  try {
+    const prefKeys = await Preferences.keys();
+    prefKeys.keys.forEach(k => keysSet.add(k));
+  } catch (_) {}
+  if (usesIndexedDB()) {
+    try {
+      const db = await database();
+      const idbKeys = await new Promise<IDBValidKey[]>((resolve, reject) => {
+        const tx = db.transaction(STORE, 'readonly');
+        const req = tx.objectStore(STORE).getAllKeys();
+        tx.oncomplete = () => resolve(req.result || []);
+        tx.onerror = () => reject(tx.error);
+      }).finally(() => db.close());
+      idbKeys.forEach(k => { if (typeof k === 'string') keysSet.add(k); });
+    } catch (_) {}
+  }
+  return Array.from(keysSet);
+}

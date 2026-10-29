@@ -390,17 +390,70 @@ function doPost(e) {
     if (action === 'get_library' || action === 'get_question_state') {
       const props = PropertiesService.getScriptProperties();
       const items = sharedLibraryItems(folder);
+
+      // Reconcile with actual non-trashed files in Google Drive:
+      // An item is only completed if its valid metadata and audio still exist in Drive!
+      const activeLessonIds = {};
+      const activeRecordingIds = {};
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.sourceLessonId) activeLessonIds[it.sourceLessonId] = true;
+        if (it.id) activeLessonIds[it.id] = true;
+        if (it.recordingId) activeRecordingIds[it.recordingId] = true;
+      }
+
       let tombstones = {};
       try {
         tombstones = JSON.parse(props.getProperty('DELETED_RECORDS_V1') || '{}') || {};
       } catch (_) {}
+
+      let completed = completedQuestions();
+      let changedCompleted = false;
+      let changedTombstones = false;
+      const prunedCompleted = {};
+
+      for (const qId of Object.keys(completed)) {
+        const recId = completed[qId];
+        if (activeRecordingIds[recId] || activeLessonIds[qId]) {
+          prunedCompleted[qId] = recId;
+        } else {
+          // File was deleted directly in Google Drive!
+          changedCompleted = true;
+          if (recId && !tombstones[recId]) {
+            tombstones[recId] = new Date().toISOString();
+            changedTombstones = true;
+          }
+          if (qId && !tombstones[qId]) {
+            tombstones[qId] = new Date().toISOString();
+            changedTombstones = true;
+          }
+        }
+      }
+
+      // Check known recordings registry for any that vanished from Drive
+      let known = {};
+      try { known = JSON.parse(props.getProperty('KNOWN_RECORDINGS_V1') || '{}') || {}; } catch (_) {}
+      for (const recId of Object.keys(known)) {
+        if (!activeRecordingIds[recId] && !tombstones[recId]) {
+          tombstones[recId] = new Date().toISOString();
+          changedTombstones = true;
+        }
+      }
+
+      if (changedCompleted) {
+        props.setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(prunedCompleted));
+      }
+      if (changedTombstones) {
+        props.setProperty('DELETED_RECORDS_V1', JSON.stringify(tombstones));
+      }
+
       return createJsonResponse({
         status: 'success',
         action: action,
         checkedAt: new Date().toISOString(),
         items: action === 'get_library' ? items : undefined,
         tombstones: Object.keys(tombstones),
-        answeredQuestionIds: Object.keys(completedQuestions())
+        answeredQuestionIds: Object.keys(prunedCompleted)
       });
     }
     if (action === 'update_recording_permissions') {
@@ -445,6 +498,14 @@ function doPost(e) {
         status: 'needs_audio', reviewStatus: 'pending_approval', approvedBy: null, uploadedAt: new Date().toISOString(), permissions: { playback: 'denied', aiVoiceTraining: 'denied' } };
       const file = folder.createFile(Utilities.newBlob(JSON.stringify(meta), 'application/json', name));
       rememberCompletedQuestion(lessonId, recordingId, english, true);
+      try {
+        const props = PropertiesService.getScriptProperties();
+        let known = JSON.parse(props.getProperty('KNOWN_RECORDINGS_V1') || '{}') || {};
+        if (!known[recordingId]) {
+          known[recordingId] = lessonId;
+          props.setProperty('KNOWN_RECORDINGS_V1', JSON.stringify(known));
+        }
+      } catch (_) {}
       return createJsonResponse({ status: 'success', verified: file.getSize() > 0, metadataFileId: file.getId() });
     }
 
@@ -713,6 +774,14 @@ function doPost(e) {
       }
 
       rememberCompletedQuestion(lessonId, recordingId, english, true);
+      try {
+        const props = PropertiesService.getScriptProperties();
+        let known = JSON.parse(props.getProperty('KNOWN_RECORDINGS_V1') || '{}') || {};
+        if (!known[recordingId]) {
+          known[recordingId] = lessonId;
+          props.setProperty('KNOWN_RECORDINGS_V1', JSON.stringify(known));
+        }
+      } catch (_) {}
       return createJsonResponse({
         status: 'success',
         duplicate: false,

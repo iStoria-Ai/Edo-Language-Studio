@@ -18,6 +18,11 @@ import {
   processBackgroundUploadQueue
 } from './services/cloudSyncService';
 import {
+  isLibraryResetCompleted,
+  executeOneTimeLibraryReset,
+  reconcileLocalLibraryWithCloud
+} from './services/libraryResetService';
+import {
   AppSection,
   EdoEntry,
   ScreenNumber,
@@ -88,30 +93,23 @@ export const App: React.FC = () => {
       if (!navigator.onLine) { setCommunityError('Offline — showing previously cached community contributions. Pending work stays on this device.'); return; }
       let snapshot = await fetchCommunityLibrary();
 
-      // Process tombstones: purge deleted records from local device and sync queue
-      const tombstones = new Set(snapshot.tombstones || []);
-      if (tombstones.size > 0) {
-        for (const tomb of tombstones) {
-          dequeueFromBackgroundUpload(tomb);
-        }
-        const currentLocal = await loadLibrary();
-        const pruned = currentLocal.entries.filter(e => {
-          if (e.recordingId && tombstones.has(e.recordingId)) return false;
-          if (e.cloudMetadataFileId && tombstones.has(e.cloudMetadataFileId)) return false;
-          if (e.id && tombstones.has(e.id)) return false;
-          return true;
-        });
-        if (pruned.length !== currentLocal.entries.length) {
-          await saveEntries(pruned, currentLocal.entries);
-        }
+      // One-time authoritative reset check (edo_library_reset_v2)
+      const resetDone = await isLibraryResetCompleted();
+      if (!resetDone) {
+        await executeOneTimeLibraryReset(snapshot);
+      } else {
+        await reconcileLocalLibraryWithCloud(snapshot);
       }
 
       let changedOnline = false;
       let queuedAudio = false;
       const local = await loadLibrary();
-      // Old local spellings belong to their original metadata, never a new recording.
+      // Only genuine unsynchronized recordings waiting for upload should be enqueued
       for (const entry of local.entries) {
-        if (!entry.isSampleData && entry.hasAudio && entry.audioDataUrl && entry.syncStatus !== 'synced_to_drive') { enqueueForBackgroundUpload(entry.id); queuedAudio = true; }
+        if (!entry.isSampleData && entry.hasAudio && entry.audioDataUrl && entry.syncStatus === 'pending_upload' && !entry.cloudMetadataFileId) {
+          enqueueForBackgroundUpload(entry.id);
+          queuedAudio = true;
+        }
         const remote = snapshot.entries.find(item => item.recordingId === entry.recordingId || item.cloudMetadataFileId === entry.cloudMetadataFileId);
         if (remote?.cloudMetadataFileId && !remote.edoText && entry.edoText?.trim()) { await queueCommunitySpelling(remote.cloudMetadataFileId, entry.edoText); changedOnline = true; }
         if (!entry.isSampleData && !entry.hasAudio && entry.edoText?.trim() && !entry.cloudMetadataFileId) {
@@ -156,8 +154,12 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     loadLibrary().then((loaded) => {
-      // Safely migrate unsynchronized local recordings into the existing idempotent upload queue.
-      for (const entry of loaded.entries) if (!entry.isSampleData && entry.audioDataUrl && entry.syncStatus !== 'synced_to_drive') enqueueForBackgroundUpload(entry.id);
+      // Safely migrate only genuine unsynchronized local recordings into the upload queue
+      for (const entry of loaded.entries) {
+        if (!entry.isSampleData && entry.audioDataUrl && entry.syncStatus === 'pending_upload' && !entry.cloudMetadataFileId) {
+          enqueueForBackgroundUpload(entry.id);
+        }
+      }
       setLibraryInfo(loaded);
       setEntries(loaded.entries);
       setIsLoaded(true);
@@ -354,7 +356,7 @@ export const App: React.FC = () => {
               cloudAudioFileId: cloudAudioId,
               cloudMetadataFileId: cloudMetaId,
               syncStatus: 'synced_to_drive' as const,
-              audioDataUrl: item.audioDataUrl, // Preserve offline playback, including consent-restricted cloud audio.
+              audioDataUrl: undefined, // Safely remove temporary local audio bytes after verified cloud upload
               lastSyncAttempt: new Date().toISOString(),
               syncError: undefined
             };

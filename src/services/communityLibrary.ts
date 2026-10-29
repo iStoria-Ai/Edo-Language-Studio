@@ -77,6 +77,7 @@ export function mergeCommunityEntries(
   const merged = local
     .filter(entry => !isSyntheticTest(entry))
     .filter(entry => {
+      if (entry.id && tombSet.has(entry.id)) return false;
       if (entry.recordingId && tombSet.has(entry.recordingId)) return false;
       if (entry.cloudMetadataFileId && tombSet.has(entry.cloudMetadataFileId)) return false;
       if (!entry.isSampleData || !activeRemote.some(shared => shared.sourceLessonId === entry.id)) return true;
@@ -91,13 +92,15 @@ export function mergeCommunityEntries(
       );
       if (!shared) return { ...entry };
       remaining.delete(shared.recordingId);
-      // Merge for display only. Never write remote metadata over the original protected library.
+      // Merge for display only. Authoritative cloud metadata takes precedence.
       return {
         ...entry,
         cloudAudioFileId: shared.cloudAudioFileId,
         cloudMetadataFileId: shared.cloudMetadataFileId,
-        sourceLessonId: shared.sourceLessonId,
+        sourceLessonId: shared.sourceLessonId || entry.id,
         syncStatus: 'synced_to_drive' as const,
+        isCommunity: true,
+        hasAudio: true,
         playbackPermission: shared.playbackPermission,
         edoText: shared.edoText || entry.edoText,
         status: shared.edoText ? ('awaiting_review' as const) : entry.status,
@@ -107,6 +110,7 @@ export function mergeCommunityEntries(
         autoLocked: shared.autoLocked ?? entry.autoLocked
       };
     });
+
   return [...merged, ...remaining.values()].map(entry => {
     const draft = drafts.find(item => item.metadataFileId === entry.cloudMetadataFileId);
     return draft
