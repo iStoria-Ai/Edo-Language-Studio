@@ -27,7 +27,6 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
   const [checkedAt, setCheckedAt] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [refreshKey, setRefreshKey] = useState(0);
   const refreshInFlight = useRef(false);
   useEffect(() => {
     let active = true;
@@ -49,9 +48,10 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
     const interval = window.setInterval(() => void refresh(), 30000);
     const onFocus = () => void refresh();
     window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onFocus);
     document.addEventListener('visibilitychange', onFocus);
-    return () => { active = false; window.clearInterval(interval); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus); };
-  }, [refreshKey]);
+    return () => { active = false; window.clearInterval(interval); window.removeEventListener('focus', onFocus); window.removeEventListener('online', onFocus); document.removeEventListener('visibilitychange', onFocus); };
+  }, []);
   const stats = cloud || { wordsCollected: 0, voiceRecordings: 0, writtenWords: 0, phrasesAndSentences: 0, totalContributions: 0, reviewQueueCount: 0, needsHelpCount: 0 };
   const count = (value: number) => cloud ? value.toLocaleString() : '—';
 
@@ -129,9 +129,9 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
           <div className="mb-3 rounded-xl border border-[#D7C8F3] bg-white p-3 text-xs space-y-1.5">
             <div className="flex items-center justify-between gap-2">
               <strong>Live Google Drive totals</strong>
-              <button type="button" disabled={loading} onClick={() => setRefreshKey(key => key + 1)} className="rounded-lg border border-[#D7C8F3] px-2 py-1 text-[#6E4BC3] disabled:opacity-50">{loading ? 'Refreshing…' : 'Refresh'}</button>
+
             </div>
-            {error ? <p role="alert" className="text-red-700">Drive totals unavailable: {error} Try Refresh.</p> : <p role="status">{cloud ? `${cloud.fileCount} files · ${cloud.audioFileCount} audio files · ${cloud.metadataFileCount} recording metadata files` : 'Reading the studio folder…'}</p>}
+            {error ? <p role="alert" className="text-red-700">Drive totals unavailable: {error} The app retries automatically.</p> : <p role="status">{cloud ? `${cloud.fileCount} files · ${cloud.audioFileCount} audio files · ${cloud.metadataFileCount} recording metadata files` : 'Reading the studio folder…'}</p>}
             {cloud && <p className="text-[#5A665D]">Updated {new Date(checkedAt).toLocaleTimeString()}. Refreshes every 30 seconds. Deleted files leave these totals.</p>}
             <p className="text-[#5A665D]">This device holds {localStats.totalContributions} local contributions. Local backups are separate from Drive totals. Test files and incomplete recording pairs do not count as learning contributions.</p>
           </div>

@@ -1,7 +1,7 @@
 import { EdoEntry } from '../types/edo';
 import { recordingOwnerKey } from './recordingOwnership';
 import { digest } from './libraryProtection';
-import { getGatewayUrl, getStoredContributorToken, streamAudioFromGateway, submitSpellingToGateway, recordPlaybackToGateway } from './cloudSyncService';
+import { getGatewayUrl, getStoredContributorToken, streamAudioFromGateway, submitSpellingToGateway, recordPlaybackToGateway, parseAudioDataUrl } from './cloudSyncService';
 import { readLibrarySnapshot, writeLibrarySnapshot } from './localLibraryStore';
 
 const CACHE_KEY = 'edo_community_library_v1';
@@ -12,6 +12,7 @@ export interface CommunitySnapshot {
   answeredQuestionIds: string[];
   checkedAt: string;
   tombstones?: string[];
+  answeredEnglish?: string[];
 }
 
 function isSyntheticTest(entry: { id?: string; recordingId?: string; english?: string; edoText?: string }): boolean {
@@ -45,7 +46,7 @@ export async function communityRequest(payload: Record<string, unknown>) {
   });
   if (!response.ok) throw new Error(`Google Drive returned HTTP ${response.status}`);
   const data = await response.json();
-  if (data.status !== 'success') throw new Error(data.message || data.code || 'Google Drive request failed');
+  if (data.status !== 'success') throw Object.assign(new Error(data.message || data.code || 'Google Drive request failed'), { code: data.code, status: data.status });
   return data;
 }
 export async function readCommunityCache(): Promise<CommunitySnapshot | null> {
@@ -69,7 +70,8 @@ export async function fetchCommunityLibrary(): Promise<CommunitySnapshot> {
     entries: cleanItems,
     answeredQuestionIds: data.answeredQuestionIds as string[],
     checkedAt: String(data.checkedAt),
-    tombstones
+    tombstones,
+    answeredEnglish: Array.isArray(data.answeredEnglish) ? data.answeredEnglish : []
   };
   await writeLibrarySnapshot(CACHE_KEY, JSON.stringify(snapshot));
   return snapshot;
@@ -77,7 +79,7 @@ export async function fetchCommunityLibrary(): Promise<CommunitySnapshot> {
 export async function fetchAnsweredQuestions(): Promise<string[]> {
   const data = await communityRequest({ action: 'get_question_state' });
   if (!Array.isArray(data.answeredQuestionIds) || !data.answeredQuestionIds.every((id: unknown) => typeof id === 'string')) throw new Error('Shared question list is unavailable.');
-  return data.answeredQuestionIds;
+  return [...data.answeredQuestionIds, ...(Array.isArray(data.answeredEnglish) ? data.answeredEnglish.map((text: string) => 'english:' + normalizeQuestion(text)) : [])];
 }
 export function mergeCommunityEntries(
   local: EdoEntry[],
@@ -173,8 +175,8 @@ export async function uploadWrittenContribution(entry: EdoEntry): Promise<string
   return data.metadataFileId;
 }
 export async function getCommunityAudio(entry: EdoEntry): Promise<string> {
-  if (entry.audioDataUrl && entry.audioDataUrl.startsWith('data:audio/')) return entry.audioDataUrl;
-  if (entry.playbackPermission === 'denied') throw new Error('The speaker has not granted shared playback permission.');
+  if (!entry.isCommunity && entry.audioDataUrl?.startsWith('data:audio/')) return entry.audioDataUrl;
+  if (entry.playbackPermission !== 'granted') throw new Error('The speaker has not granted shared playback permission.');
   if (!entry.cloudAudioFileId) throw new Error('This contribution has no shared audio.');
   const key = 'edo_community_audio_' + entry.cloudAudioFileId;
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -191,14 +193,64 @@ export async function getCommunityAudio(entry: EdoEntry): Promise<string> {
   }
   return result.audioDataUrl;
 }
+function normalizeQuestion(text: string): string { return text.trim().toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' '); }
 export function nextUnansweredQuestion(questions: EdoEntry[], answeredIds: ReadonlySet<string>, start = 0): number {
   for (let offset = 0; offset < questions.length; offset++) {
     const index = (start + offset) % questions.length;
-    if (!answeredIds.has(questions[index].id) && !(questions[index].hasAudio && !questions[index].isSampleData)) return index;
+    if (!answeredIds.has(questions[index].id) && !answeredIds.has('english:' + normalizeQuestion(questions[index].english)) && !(questions[index].hasAudio && !questions[index].isSampleData)) return index;
   }
   return -1;
 }
 
 export async function updateOwnedRecordingPermissions(recordingId: string, metadataFileId: string, permissions: { playback: string; aiVoiceTraining: string }): Promise<void> {
   await communityRequest({ action: 'update_recording_permissions', metadataFileId, ownerKey: await recordingOwnerKey(recordingId), permissions });
+}
+
+export interface CommunityEdit { english?: string; edoText?: string; audioDataUrl?: string; durationSec?: number }
+interface CloudEditDraft { id: string; metadataFileId: string; expectedVersion: number; updates: CommunityEdit; error?: string }
+const EDIT_KEY = 'edo_pending_cloud_edits_v1';
+let editTail: Promise<unknown> = Promise.resolve();
+async function editCloudDrafts(action: (items: CloudEditDraft[]) => CloudEditDraft[]): Promise<void> {
+  const write = async () => {
+    const raw = await readLibrarySnapshot(EDIT_KEY);
+    await writeLibrarySnapshot(EDIT_KEY, JSON.stringify(action(raw ? JSON.parse(raw) : [])));
+  };
+  const run = () => typeof navigator !== 'undefined' && navigator.locks ? navigator.locks.request(EDIT_KEY, write) : write();
+  const next = editTail.then(run, run); editTail = next.catch(() => undefined); await next;
+}
+export async function queueCommunityEdit(entry: EdoEntry, updates: CommunityEdit): Promise<void> {
+  if (!entry.cloudMetadataFileId || entry.reviewStatus === 'approved_locked') throw new Error('This lesson is read-only.');
+  await editCloudDrafts(items => [...items.filter(item => item.metadataFileId !== entry.cloudMetadataFileId), {
+    id: 'edit-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2), metadataFileId: entry.cloudMetadataFileId!, expectedVersion: entry.version || 0, updates
+  }]);
+}
+export async function syncCommunityEdits(): Promise<void> {
+  const raw = await readLibrarySnapshot(EDIT_KEY);
+  const items: CloudEditDraft[] = raw ? JSON.parse(raw) : [];
+  for (const draft of items) {
+    if (draft.error) continue;
+    try {
+      const audio = draft.updates.audioDataUrl ? parseAudioDataUrl(draft.updates.audioDataUrl) : undefined;
+      const result = await communityRequest({ action: 'update_contribution', metadataFileId: draft.metadataFileId, expectedVersion: draft.expectedVersion,
+        mutationId: draft.id, english: draft.updates.english, edoText: draft.updates.edoText, durationSec: draft.updates.durationSec,
+        audioBase64: audio?.base64, mimeType: audio?.mimeType, permissions: audio ? { playback: 'granted', aiVoiceTraining: 'denied' } : undefined });
+      if (result.verified !== true) throw new Error('The update has not yet been verified online. Your draft is preserved.');
+      if (audio) {
+        const stream = await streamAudioFromGateway(result.audioFileId);
+        if (!stream.ok || !stream.audioDataUrl || parseAudioDataUrl(stream.audioDataUrl).base64 !== audio.base64) throw new Error('Voice verification is pending. Your original recording is preserved.');
+      }
+      await editCloudDrafts(current => current.filter(item => item.id !== draft.id));
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code && ['REVISION_CONFLICT', 'ENTRY_LOCKED', 'ACCESS_DENIED', 'RECORD_DELETED', 'NOT_FOUND'].includes(code)) {
+        await editCloudDrafts(current => current.map(item => item.id === draft.id ? { ...item, error: String(error) } : item));
+      } else throw error;
+    }
+  }
+}
+
+export async function ensureCommunityEditSynced(metadataFileId: string): Promise<void> {
+  const raw = await readLibrarySnapshot(EDIT_KEY);
+  const pending = (raw ? JSON.parse(raw) as CloudEditDraft[] : []).find(item => item.metadataFileId === metadataFileId);
+  if (pending) throw new Error(pending.error || 'Your contribution is saved on this device and waiting for Google Drive verification. The app retries automatically.');
 }

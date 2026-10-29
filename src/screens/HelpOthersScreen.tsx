@@ -22,6 +22,8 @@ import { WordIllustration } from '../components/WordIllustration';
 
 interface HelpOthersScreenProps {
   entries: EdoEntry[];
+  communityError?: string;
+  communityCheckedAt?: string;
   onAttachWritingToEntry: (entryId: string, edoText: string) => Promise<void>;
   onAttachAudioToEntry: (
     entryId: string,
@@ -35,7 +37,7 @@ interface HelpOthersScreenProps {
 const EDO_SPECIAL_CHARS = ['ẹ', 'ọ', 'vb', 'gh', 'kh', 'mw', 'rh'];
 
 export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
-  entries,
+  entries, communityError, communityCheckedAt,
   onAttachWritingToEntry,
   onAttachAudioToEntry,
   onBackToDashboard
@@ -65,7 +67,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     const hasVoice = Boolean(e.cloudAudioFileId || (e.hasAudio && e.isCommunity));
     if (!hasVoice) return false;
     const hasSpelling = Boolean(e.edoText && e.edoText.trim().length > 0);
-    return !hasSpelling && (!e.isCommunity || e.playbackPermission === 'granted');
+    return !hasSpelling;
   });
   const needsAudioList = entries.filter((e) => {
     if (e.isSampleData) return false;
@@ -192,7 +194,8 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     if (!currentItem || !capturedAudioUrl) return;
     stopActivePlayback();
     setIsPlaying(false);
-    await onAttachAudioToEntry(currentItem.id, capturedAudioUrl, capturedDuration, true);
+    try { await onAttachAudioToEntry(currentItem.id, capturedAudioUrl, capturedDuration, true); }
+    catch (error) { showTransientMessage(String(error)); return; }
     setCapturedAudioUrl(undefined);
     showTransientMessage(`Thank you! Added Edo voice recording for "${currentItem.english}".`);
     setCurrentIndex(0);
@@ -248,6 +251,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
 
       {/* Main Content (px-5 matching Write the Word) */}
       <div className="edo-screen-scroll pt-1">
+        {(communityError || !communityCheckedAt) && <p role="status" className="text-xs text-center text-[#556058] mb-2">{communityError || "Connecting to the shared collection…"}</p>}
         {feedbackBanner && (
           <div className="mb-2.5 px-4 py-2.5 rounded-2xl bg-[#E8F1FD] border border-[#BBD4FA] text-[#1552B0] text-[13.5px] font-bold flex items-center gap-2 shrink-0">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -261,7 +265,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
               <CheckCircle2 className="w-9 h-9" />
             </div>
             <h2 className="text-[21px] font-bold text-[#1C241E]">
-              All caught up in this queue!
+              {communityError || !communityCheckedAt ? "Waiting for the shared collection" : "All caught up in this queue!"}
             </h2>
             <p className="text-[15px] text-[#556058] mt-1.5">
               Switch tabs above or teach a new word in Teach Edo.

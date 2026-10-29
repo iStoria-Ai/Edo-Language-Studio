@@ -68,6 +68,6 @@ for (const item of vocab) {
   verifiedCount++;
 }
 
-console.log(`✓ All ${verifiedCount} starter items verified with real, locally bundled pictures.`);
-console.log('=== ALL REAL VOCABULARY PICTURES TESTS PASSED! ===\n');
+console.log(`✓ All ${verifiedCount} starter asset files are present. File size does not verify the pictured subject.`);
+console.log('=== BUNDLED VOCABULARY ASSET PRESENCE TESTS PASSED (semantic checks are separate) ===\n');
 

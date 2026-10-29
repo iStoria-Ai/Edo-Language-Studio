@@ -252,5 +252,11 @@ function wav() {
     assert.equal(realStats.needsHelpCount, 2, 'real-3 needs_writing and real-4 needs_audio');
   }
 
+  const englishAudio = load(audioBundle);
+  for (const word of ['Head', 'Nose', 'Leg', 'Body']) {
+    englishAudio.playEnglishPronunciation(word);
+    assert.equal(spokenUtterance.text, word, 'Speech must contain only the displayed English, without category prefixes');
+  }
+
   console.log('PASS: legacy preservation; stable IDs; original formats/bytes; independent permissions; persistent/idempotent queue; backup verification; additive import; duplicate/conflict protection; fresh restore; offline playback source; storage failure atomicity; retained audio; corruption rejection; real studio statistics recalculation.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

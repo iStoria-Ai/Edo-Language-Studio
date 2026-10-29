@@ -131,6 +131,7 @@ function runTests() {
   const scriptPropertiesStore = new Map();
   const propertiesService = {
     getScriptProperties: () => ({
+      getProperties: () => Object.fromEntries(scriptPropertiesStore),
       getProperty: (k) => scriptPropertiesStore.get(k) || null,
       setProperty: (k, v) => scriptPropertiesStore.set(k, String(v)),
       deleteProperty: (k) => scriptPropertiesStore.delete(k)
@@ -358,6 +359,29 @@ function runTests() {
   const repeatedSpelling = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'submit_spelling', metadataFileId: needsSpellingRes.metadataFileId, edoSpelling: 'Evbare' }) } }).getContent());
   assert.equal(repeatedSpelling.status, 'success', 'Offline spelling retry must be idempotent');
 
+  // Corrections use optimistic revisions and preserve the original audio/history.
+  const currentFood = JSON.parse(driveApp.getFileById(needsSpellingRes.metadataFileId).getBlob().getDataAsString());
+  const beforeCorrectionIds = new Set(files.keys());
+  const correction = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'update_contribution', metadataFileId: needsSpellingRes.metadataFileId, expectedVersion: currentFood.version || 0, mutationId: 'correction-0001', edoText: 'Evbare corrected' }) } }).getContent());
+  assert.equal(correction.status, 'success');
+  assert.equal(correction.audioFileId, needsSpellingRes.audioFileId);
+  const afterCorrection = JSON.parse(driveApp.getFileById(needsSpellingRes.metadataFileId).getBlob().getDataAsString());
+  assert(afterCorrection.revisionHistory.length > 0);
+  const conflict = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'update_contribution', metadataFileId: needsSpellingRes.metadataFileId, expectedVersion: currentFood.version || 0, mutationId: 'correction-0002', edoText: 'Lost-update attempt' }) } }).getContent());
+  assert.equal(conflict.code, 'REVISION_CONFLICT');
+  const textId = 'text-' + 'f'.repeat(64);
+  const textUpload = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'upsert_text_contribution', lessonId: 'custom-written-flow', recordingId: textId, english: 'Head', edoText: 'Speaker supplied spelling', category: 'word' }) } }).getContent());
+  assert.equal(textUpload.status, 'success');
+  const attachment = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'update_contribution', metadataFileId: textUpload.metadataFileId, expectedVersion: 0, mutationId: 'attachment-0001', audioBase64: dummyWavB64, mimeType: 'audio/wav', permissions: { playback: 'granted', aiVoiceTraining: 'denied' } }) } }).getContent());
+  assert.equal(attachment.status, 'success');
+  assert.equal(attachment.metadataFileId, textUpload.metadataFileId);
+  const attachedItem = libraryRequest().items.find(entry => entry.cloudMetadataFileId === textUpload.metadataFileId);
+  assert.equal(attachedItem.hasAudio, true);
+  assert.equal(attachedItem.edoText, 'Speaker supplied spelling');
+  assert(libraryRequest().answeredEnglish.includes('head'), 'Custom aliases retire the equivalent starter question');
+  for (const [id, file] of files) if (!beforeCorrectionIds.has(id)) file.setTrashed(true);
+  console.log('✓ Revision conflicts, immutable audio history, and spelling-only → complete use the same metadata record.');
+
   // Live collection totals must fall when files are deleted outside the app.
   const readStats = () => JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'get_collection_stats' }) } }).getContent());
   const beforeDelete = readStats();
@@ -375,7 +399,7 @@ function runTests() {
   for (const file of files.values()) file.setTrashed(true);
   const ledgerAfterDelete = libraryRequest();
   assert.equal(ledgerAfterDelete.items.length, 0);
-  assert(!ledgerAfterDelete.answeredQuestionIds.includes('word-water'), 'Deleting audio must reopen curriculum question for new recording in Teach Edo');
+  assert(ledgerAfterDelete.answeredQuestionIds.includes('word-water'), 'Deleting files must not reopen an answered question');
   const emptyStats = readStats().stats;
   for (const key of Object.keys(emptyStats)) assert.equal(emptyStats[key], 0, `An emptied Drive must reset ${key}`);
   const folder = driveApp.getFolderById(TARGET_FOLDER_ID);
@@ -477,6 +501,8 @@ function runTests() {
     }) }
   }).getContent());
   assert.equal(lockedUploadAttempt.code, 'ENTRY_LOCKED');
+  const lockedEdit = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'update_contribution', metadataFileId: targetMetaFileId, expectedVersion: 0, edoText: 'Unauthorized edit' }) } }).getContent());
+  assert.equal(lockedEdit.code, 'ENTRY_LOCKED');
   console.log('✓ Modification of locked entry correctly blocked with ENTRY_LOCKED.');
 
   // Admin unlocking the entry succeeds
@@ -638,9 +664,9 @@ function runTests() {
     }) }
   }).getContent());
   assert.equal(play5.distinctListenersCount, 5);
-  assert.equal(play5.autoLocked, true, 'Reaching 5 verified distinct listeners must auto-lock');
-  assert.equal(play5.reviewStatus, 'approved_locked');
-  console.log('✓ 5 distinct listeners verified: entry automatically locked to approved_locked.');
+  assert.equal(play5.autoLocked, false, 'Public listeners cannot approve or lock a lesson');
+  assert.equal(play5.reviewStatus, 'pending_approval');
+  console.log('✓ 5 distinct listeners verified: entry remains pending administrator approval.');
 
   // 13. Admin Authoritative Deletion, Tombstone Broadcasting & Curriculum Reopening
   console.log('--- Step 13: Testing Admin Authoritative Deletion & Tombstones ---');
@@ -671,8 +697,8 @@ function runTests() {
   }).getContent());
   assert(!libAfterDel.items.some(it => it.recordingId === 'rec-autolock-01'), 'Deleted item must be removed from cloud library');
   assert(libAfterDel.tombstones.includes('rec-autolock-01'), 'Tombstone must be broadcast to client devices');
-  assert(!libAfterDel.answeredQuestionIds.includes('word-autolock-01'), 'Curriculum question must reopen for Teach Edo');
-  console.log('✓ Admin authoritative deletion, tombstones, and prompt reopening verified.');
+  assert(libAfterDel.answeredQuestionIds.includes('word-autolock-01'), 'Administrator deletion preserves answered history');
+  console.log('✓ Admin authoritative deletion, tombstones, and durable answered history verified.');
 
   // Test doGet health check (tokens are never accepted in GET URLs)
   const healthGet = JSON.parse(sandbox.doGet({}).getContent());

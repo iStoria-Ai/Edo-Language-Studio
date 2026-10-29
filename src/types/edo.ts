@@ -35,6 +35,7 @@ export type CloudSyncStatus =
   | 'upload_failed';
 
 export interface EdoEntry {
+  version?: number;
   sourceLessonId?: string;
   isCommunity?: boolean;
   playbackPermission?: 'granted' | 'denied' | 'unknown';

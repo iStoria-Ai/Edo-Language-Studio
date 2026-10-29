@@ -1,0 +1,35 @@
+[
+  {
+    "action": "get_library",
+    "status": "success",
+    "items": 0,
+    "completed": 0,
+    "answeredEnglish": 0,
+    "hasSynthetic": false
+  },
+  {
+    "action": "get_question_state",
+    "status": "success",
+    "answered": 13,
+    "answeredEnglish": 0,
+    "stats": null
+  },
+  {
+    "action": "get_collection_stats",
+    "status": "success",
+    "answered": 0,
+    "answeredEnglish": 0,
+    "stats": {
+      "fileCount": 0,
+      "audioFileCount": 0,
+      "metadataFileCount": 0,
+      "wordsCollected": 0,
+      "voiceRecordings": 0,
+      "writtenWords": 0,
+      "phrasesAndSentences": 0,
+      "totalContributions": 0,
+      "reviewQueueCount": 0,
+      "needsHelpCount": 0
+    }
+  }
+]

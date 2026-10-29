@@ -162,7 +162,7 @@ export async function fetchMoreOnlineVocabulary(
 
     // Pick a random topic to discover fresh everyday words
     const topic = ONLINE_TOPICS[Math.floor(Math.random() * ONLINE_TOPICS.length)];
-    const url = `https://api.datamuse.com/words?topics=${encodeURIComponent(topic)}&md=f&max=40`;
+    const url = `https://api.datamuse.com/words?rel_trg=${encodeURIComponent(topic)}&md=f&max=40`;
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 6000);

@@ -81,6 +81,7 @@ export function isCompletedLesson(entry: EdoEntry): boolean {
 
 export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   entries,
+  communityError, communityCheckedAt, communityBusy,
   onLibraryChanged,
   onEditText,
   onSaveEntry,
@@ -90,7 +91,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [activeFilter, setActiveFilter] = useState<LibraryFilter>('all');
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [selectedSnapshot, setSelectedEntry] = useState<EdoEntry | null>(null);
-  const selectedEntry = selectedSnapshot ? entries.find(entry => entry.id === selectedSnapshot.id) || selectedSnapshot : null;
+  const selectedEntry = selectedSnapshot ? entries.find(entry => entry.id === selectedSnapshot.id) || null : null;
 
   // Edit modal state
   const [editEnglish, setEditEnglish] = useState('');
@@ -225,7 +226,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     };
 
     // Case 1: Local recorded audio bytes are present
-    if (entry.audioDataUrl && typeof entry.audioDataUrl === 'string' && entry.audioDataUrl.startsWith('data:audio/')) {
+    if (!entry.isCommunity && entry.audioDataUrl && typeof entry.audioDataUrl === 'string' && entry.audioDataUrl.startsWith('data:audio/')) {
       setPlayingId(entry.id);
       trackPlayback();
       playAudioRecording(
@@ -493,6 +494,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
         {completedEntries.length} completed {completedEntries.length === 1 ? 'lesson' : 'lessons'} in Library
       </p>
 
+      {communityError && <p role="status" className="mx-5 text-xs text-[#56625A]">{communityCheckedAt ? 'Showing previously received lessons. Reconnecting when the internet is available.' : 'Connect to the internet to load the community Library.'}</p>}
       {/* Search Bar & Filter Pills (px-5) */}
       <div className="w-full px-5 pt-1 pb-2 shrink-0">
         <div className="relative flex items-center">
@@ -559,7 +561,8 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           return (
             <div
               key={entry.id}
-              className="w-full rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition"
+              onClick={() => { if (!isLocked) handleOpenEntry(entry); }}
+              className="w-full h-[96px] rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition"
             >
               <div className="flex flex-1 items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center shrink-0">
@@ -572,14 +575,14 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   />
                 </div>
 
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 max-h-[74px] overflow-y-auto pr-1">
                   {/* Line 1: English (Full text visible, wraps cleanly) */}
-                  <p className="text-[14.5px] leading-snug font-semibold text-[#1A241D] break-words whitespace-normal select-text">
+                  <p className="text-[13px] leading-snug font-semibold text-[#1A241D] break-words whitespace-normal select-text">
                     <span className="text-[#68766E] font-medium text-[13px]">English:</span> {entry.english}
                   </p>
 
                   {/* Line 2: Edo (Full spelling visible, with small status dot or lock) */}
-                  <p className="text-[14px] leading-snug text-[#157A4C] break-words whitespace-normal mt-0.5 flex items-center gap-1.5 flex-wrap select-text">
+                  <p className="text-[13px] leading-snug text-[#157A4C] break-words whitespace-normal mt-0.5 flex items-center gap-1.5 flex-wrap select-text">
                     <span className="text-[#68766E] font-medium text-[13px]">Edo:</span>
                     <span className="font-bold text-[#1F2922]">{entry.edoText}</span>
                     {isLocked ? (
@@ -649,7 +652,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
 
         {visibleEntries.length === 0 && (
           <div className="py-10 text-center text-[#5A655D] text-[14px]">
-            No completed lessons found matching &ldquo;{searchQuery}&rdquo;.
+            {communityBusy && !communityCheckedAt ? 'Loading community lessons…' : communityError && !communityCheckedAt ? 'Connect to load the community Library.' : searchQuery ? `No completed lessons match “${searchQuery}”.` : 'No completed cloud lessons yet.'}
           </div>
         )}
       </div>

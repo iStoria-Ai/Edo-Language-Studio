@@ -1,3 +1,4 @@
+import verifiedSubjects from '../data/vocabularyPictureSubjects.json';
 /**
  * Curated Vocabulary Image Service
  * Provides authentic, high-quality, properly licensed photographs and illustrations
@@ -192,6 +193,14 @@ export function getVocabularyImageUrl(params: {
   illustrationKey?: string;
   imageUrl?: string;
 }): string {
+  // These subjects were visually audited; earlier JPGs contained unrelated photos.
+  const verifiedSubject = normalizeEnglish(params.english || '');
+  const subjectAsset = (verifiedSubjects as Record<string, string>)[verifiedSubject];
+  if (subjectAsset) {
+    const base = getBaseUrl();
+    return `${base.endsWith('/') ? base : base + '/'}assets/vocabulary/verified/${subjectAsset}.svg`;
+  }
+  if (verifiedSubject === 'yam') return '';
   // 1. Explicit image URL already provided
   if (params.imageUrl && params.imageUrl.trim()) {
     return params.imageUrl;
@@ -238,7 +247,7 @@ export function getVocabularyImageUrl(params: {
   }
 
   // 5. Fallback to curated high-quality default studio illustration
-  return `${cleanBase}assets/edo-welcome-hero.jpg`;
+  return ''; // Never substitute an unrelated portrait for an unknown word.
 }
 
 /**

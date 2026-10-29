@@ -31,6 +31,8 @@ import {
 
 interface TeachEdoScreenProps {
   questions: EdoEntry[];
+  cloudAnsweredIds?: string[];
+  cloudAnsweredEnglish?: string[];
   initialStepState?: TeachStepState;
   onSaveVoiceContribution: (
     entryId: string,
@@ -49,7 +51,7 @@ interface TeachEdoScreenProps {
 const EDO_SPECIAL_CHARS = ['ẹ', 'ọ', 'vb', 'gh', 'kh', 'mw', 'rh'];
 
 export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
-  questions,
+  questions, cloudAnsweredIds, cloudAnsweredEnglish,
   initialStepState = 'prompt',
   onSaveVoiceContribution,
   onSaveWritingForContribution,
@@ -117,6 +119,14 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     return () => { active = false; window.clearInterval(timer); window.removeEventListener('online', reconnect); window.removeEventListener('focus', reconnect); };
   }, [retryShared]);
 
+  useEffect(() => {
+    if (cloudAnsweredIds) setAnsweredIds(previous => new Set([...(previous || []), ...cloudAnsweredIds, ...(cloudAnsweredEnglish || []).map(text => 'english:' + text)]));
+  }, [cloudAnsweredIds, cloudAnsweredEnglish]);
+  const availableIndex = answeredIds ? nextUnansweredQuestion(questions, answeredIds, safeIndex) : -1;
+  useEffect(() => {
+    if (answeredIds && stepState === 'prompt' && !isRecording && !recordedAudioUrl && availableIndex >= 0 && availableIndex !== safeIndex) setQuestionIndex(availableIndex);
+  }, [answeredIds, availableIndex, safeIndex, stepState, isRecording, recordedAudioUrl]);
+
   // Sync external step state if controlled in dev preview mode
   useEffect(() => {
     setStepState(initialStepState);
@@ -158,7 +168,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
       stopEnglishRef.current();
     }
     stopEnglishRef.current = playEnglishPronunciation(
-      currentQuestion.id || currentQuestion.english,
+      currentQuestion.english,
       speed,
       (playing) => setIsPlayingEnglish(playing)
     );
@@ -174,7 +184,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
       try {
         const ids = new Set(await fetchAnsweredQuestions());
         setAnsweredIds(ids);
-        if (ids.has(currentQuestion.id)) { setRecordingError('Another community member already answered this question. Moving to an unanswered question.'); return; }
+        if (nextUnansweredQuestion([currentQuestion], ids) < 0) { setRecordingError('Another community member already answered this question. Moving to an unanswered question.'); return; }
       } catch (error) { setSharedError(String(error)); setAnsweredIds(null); return; }
       finally { questionCheckLock.current = false; }
       // Stop any active playback or English question TTS before starting the microphone
@@ -373,13 +383,13 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
       setSkipFeedback(null);
     }
     setQuestionIndex(prev => {
-      const next = (prev + 1) % Math.max(1, questions.length);
-      return next;
+      const next = nextUnansweredQuestion(questions, answeredIds || new Set(), (prev + 1) % Math.max(1, questions.length));
+      return next >= 0 ? next : prev;
     });
     updateStep('prompt');
   };
 
-  if (stepState === 'prompt' && !isRecording && !recordedAudioUrl && questions.length === 0) {
+  if (stepState === 'prompt' && !isRecording && !recordedAudioUrl && (!answeredIds || availableIndex < 0 || availableIndex !== safeIndex)) {
     return (
       <div className="edo-screen">
         <StudioHeader theme="green" sectionLabel="Teach Edo" rightAction="close" onRightAction={onFinishForNow} />
@@ -387,13 +397,13 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
           <div className="w-14 h-14 rounded-full bg-[#E8F5E9] text-[#157A4C] flex items-center justify-center mx-auto">
             <Sparkles className="w-7 h-7" />
           </div>
-          <h1 className="text-xl font-bold text-[#1A241D]">Loading more everyday words…</h1>
+          <h1 className="text-xl font-bold text-[#1A241D]">{!answeredIds ? 'Connecting to shared questions…' : 'Loading more everyday words…'}</h1>
           <p className="text-sm text-[#556058] max-w-sm mx-auto leading-relaxed">
             You have contributed to all currently available words! The studio is discovering more vocabulary in the background. You can also teach a custom word or phrase of your choice right now.
           </p>
           <div className="pt-2 flex flex-col gap-2.5 max-w-xs mx-auto">
             <button type="button" className="edo-primary-btn" onClick={onOpenTeachSomethingElse}>
-              Teach a Custom Word
+              Teach Custom Word
             </button>
             <button type="button" className="edo-secondary-btn" onClick={onFinishForNow}>
               Back to Dashboard
@@ -415,6 +425,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
         onLogoClick={() => { if (confirmLeave()) onFinishForNow(); }}
       />
 
+      <div className="px-5 pt-1 shrink-0"><button type="button" className="w-full rounded-xl border border-[#157A4C] px-3 py-2 font-bold text-[#157A4C] text-sm" onClick={() => { if (confirmLeave()) onOpenTeachSomethingElse(); }}>Teach Custom Word</button></div>
       {/* Continuous Exploration Sub-header without fixed lesson count */}
       {stepState !== 'completed' && (
         <div className="w-full px-5 pt-1 pb-1.5 shrink-0 flex items-center justify-between text-[13px] text-[#4E5B52] font-semibold">
@@ -422,13 +433,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
             <span className="w-2 h-2 rounded-full bg-[#157A4C] animate-pulse" />
             <span>Everyday English → Edo Voice</span>
           </div>
-          <button
-            type="button"
-            onClick={() => { if (confirmLeave()) onOpenTeachSomethingElse(); }}
-            className="text-[#157A4C] hover:underline font-bold text-[13px]"
-          >
-            + Teach custom word
-          </button>
+
         </div>
       )}
 
@@ -449,6 +454,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
 
             <div className="relative w-full flex items-center justify-center mt-2 mb-2 min-h-[140px]">
               <WordIllustration
+                allowOnlineDiscovery
                 id={currentQuestion.id}
                 english={currentQuestion.english}
                 illustrationKey={currentQuestion.illustrationKey}

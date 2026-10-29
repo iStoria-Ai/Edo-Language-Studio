@@ -604,16 +604,14 @@ export async function submitSpellingToGateway(params: {
 
 export async function adminLockEntry(
   metadataFileId: string,
-  approvalCodeOrAdminToken: string,
+  adminToken: string,
   url = getGatewayUrl()
 ): Promise<{ ok: boolean; status: string; message: string }> {
   try {
-    const code = approvalCodeOrAdminToken.trim();
     const payload = {
       action: 'admin_lock_entry',
-      authToken: code,
-      approvalCode: code,
-      metadataFileId: metadataFileId.trim()
+      authToken: adminToken,
+      metadataFileId: metadataFileId
     };
     const response = await fetch(url, {
       method: 'POST',

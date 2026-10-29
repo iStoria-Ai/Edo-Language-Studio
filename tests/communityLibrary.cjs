@@ -209,5 +209,21 @@ const shared = { id: 'cloud-rec-a', recordingId: 'rec-a', sourceLessonId: 'word-
   assert.equal(mergedWithTest.length, 1);
   assert.equal(mergedWithTest[0].recordingId, 'rec-a');
 
+  // A saved local draft must never be presented as a cloud-verified completion.
+  const editStorage = new Map(); let editOffline = true, staleEdit = false, sentEdits = 0;
+  const editing = device(editStorage, async (_url, options) => {
+    if (editOffline) throw Error('offline');
+    const payload = JSON.parse(options.body); assert.equal(payload.action, 'update_contribution'); sentEdits++;
+    assert.equal(payload.metadataFileId, 'meta-a'); assert.equal(payload.expectedVersion, 2);
+    return { ok: true, json: async () => staleEdit ? { status: 'conflict', code: 'REVISION_CONFLICT', message: 'Reopen the current lesson' } : { status: 'success', verified: true, metadataFileId: 'meta-a', version: 3 } };
+  });
+  await editing.api.queueCommunityEdit({ ...shared, version: 2 }, { edoText: 'transport fixture' });
+  await assert.rejects(editing.api.syncCommunityEdits(), /offline/);
+  await assert.rejects(device(editStorage).api.ensureCommunityEditSynced('meta-a'), /waiting for Google Drive verification/);
+  editOffline = false; await editing.api.syncCommunityEdits(); await editing.api.ensureCommunityEditSynced('meta-a');
+  staleEdit = true; await editing.api.queueCommunityEdit({ ...shared, version: 2 }, { edoText: 'stale draft' });
+  await editing.api.syncCommunityEdits(); await assert.rejects(editing.api.ensureCommunityEditSynced('meta-a'), /Reopen the current lesson/);
+  await editing.api.syncCommunityEdits(); assert.equal(sentEdits, 2, 'Conflicting revisions are preserved without repeated overwrite attempts');
+
   console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, automatic section progression, tombstone purging, and synthetic test rejection.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

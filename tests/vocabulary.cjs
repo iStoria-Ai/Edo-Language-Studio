@@ -5,6 +5,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { buildSync } = require('esbuild');
+const vm = require('node:vm');
 
 console.log('=== Running Vocabulary Expansion Tests ===');
 
@@ -115,6 +117,14 @@ assert.equal(availableQuestions.length, 2);
 assert.equal(availableQuestions[0].id, 'home-door');
 assert.equal(availableQuestions[1].id, 'food-rice');
 console.log('✓ Answered words correctly excluded by ID and normalized English.');
+
+// Anatomical prompts must resolve to audited subject illustrations, not mislabeled photos.
+const imageBundle = buildSync({ entryPoints: ['src/services/imageService.ts'], bundle: true, write: false, platform: 'node', format: 'cjs', logLevel: 'silent' }).outputFiles[0].text;
+const imageModule = { exports: {} };
+vm.runInNewContext(imageBundle, { module: imageModule, exports: imageModule.exports, console });
+for (const word of ['Head', 'Nose', 'Leg', 'Hand', 'Body', 'Water']) {
+  assert(imageModule.exports.getVocabularyImageUrl({ english: word, id: 'body-head', imageUrl: '/wrong-photo.jpg' }).endsWith('/verified/' + word.toLowerCase() + '.svg'));
+}
 
 console.log('=== ALL VOCABULARY EXPANSION TESTS PASSED! ===');
 

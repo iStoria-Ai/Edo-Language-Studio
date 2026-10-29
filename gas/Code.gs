@@ -120,10 +120,10 @@ function getVerifiedContributor(providedToken, action, payload) {
   }
 
   // If token is invalid or omitted, check if action permits community contributor access
-  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling', 'get_collection_stats', 'get_library', 'get_question_state', 'upsert_text_contribution', 'update_recording_permissions', 'record_playback'];
+  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling', 'get_collection_stats', 'get_library', 'get_question_state', 'upsert_text_contribution', 'update_recording_permissions', 'record_playback', 'update_contribution'];
   if (communityAllowedActions.indexOf(action) !== -1) {
     // Enforce rate limiting for community uploads via CacheService
-    if (['upload_recording', 'submit_spelling', 'upsert_text_contribution'].indexOf(action) !== -1) {
+    if (['upload_recording', 'submit_spelling', 'upsert_text_contribution', 'update_contribution'].indexOf(action) !== -1) {
       const cache = CacheService.getScriptCache();
       const currentWindow = Math.floor(Date.now() / (RATE_LIMIT_WINDOW_SEC * 1000));
       const cacheKey = 'rate_community_uploads_' + currentWindow;
@@ -171,33 +171,41 @@ const PROMPT_ENGLISH_TO_ID = {
   'where are you going': 'sentence-going',
   'i am coming': 'sentence-coming'
 };
+function normalizedEnglish(text) { return String(text || '').trim().toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' '); }
+function answeredRecords() {
+  const props = PropertiesService.getScriptProperties().getProperties();
+  return Object.keys(props).filter(function(key) { return key.indexOf('ANSWERED_Q_') === 0; }).map(function(key) { return JSON.parse(props[key]); });
+}
 function completedQuestions() {
   const raw = PropertiesService.getScriptProperties().getProperty('COMPLETED_QUESTIONS_V1');
-  if (!raw) return {};
-  const value = JSON.parse(raw);
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Completion ledger is invalid.');
-  return value;
+  const completed = raw ? JSON.parse(raw) : {};
+  if (!completed || typeof completed !== 'object' || Array.isArray(completed)) throw new Error('Completion ledger is invalid.');
+  answeredRecords().forEach(function(record) { completed[record.lessonId] = record.recordingId; });
+  return completed;
 }
 function rememberCompletedQuestion(lessonId, recordingId, englishWord, writeLocked) {
-  let targetId = TEACH_PROMPT_IDS.indexOf(lessonId) !== -1 ? lessonId : '';
-  if (!targetId && englishWord) {
-    targetId = PROMPT_ENGLISH_TO_ID[String(englishWord).trim().toLowerCase()] || '';
-  }
-  if (!targetId && lessonId && typeof lessonId === 'string' && /^[a-zA-Z0-9_-]{2,80}$/.test(lessonId) && !lessonId.startsWith('test-')) {
-    targetId = lessonId;
-  }
-  if (!targetId) return;
-  if (completedQuestions()[targetId]) return;
+  if (!/^[a-zA-Z0-9_-]{2,80}$/.test(lessonId || '') || /^test-/.test(lessonId)) return;
+  const english = normalizedEnglish(englishWord || lessonId);
+  if (!english) return;
+  const props = PropertiesService.getScriptProperties();
+  const key = 'ANSWERED_Q_' + hashSha256(english);
+  if (props.getProperty(key)) return;
   const lock = LockService.getScriptLock();
-  const ownsLock = writeLocked === true;
-  if (!ownsLock) lock.waitLock(10000);
+  if (!writeLocked) lock.waitLock(10000);
   try {
-    const completed = completedQuestions();
-    if (!completed[targetId]) {
-      completed[targetId] = recordingId;
-      PropertiesService.getScriptProperties().setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
-    }
-  } finally { if (!ownsLock) lock.releaseLock(); }
+    if (!props.getProperty(key)) props.setProperty(key, JSON.stringify({ lessonId: lessonId, recordingId: recordingId, english: english, answeredAt: new Date().toISOString() }));
+  } finally { if (!writeLocked) lock.releaseLock(); }
+}
+function readTombstones() {
+  return JSON.parse(PropertiesService.getScriptProperties().getProperty('DELETED_RECORDS_V1') || '{}') || {};
+}
+function archiveRevision(folder, file, meta, actor) {
+  const version = Number(meta.version) || 0;
+  const history = folder.createFile(Utilities.newBlob(JSON.stringify(meta, null, 2), 'application/json', meta.lessonId + '_' + meta.recordingId + '_history_v' + version + '_' + Date.now() + '.json'));
+  const revisions = Array.isArray(meta.revisionHistory) ? meta.revisionHistory : [];
+  meta.revisionHistory = revisions.concat([{ version: version, metadataFileId: history.getId(), audioFileId: meta.audioFileId || null, changedAt: new Date().toISOString(), actor: actor.id }]);
+  meta.version = version + 1;
+  meta.updatedAt = new Date().toISOString();
 }
 function ownerKeyHash(key) {
   if (!/^[a-f0-9]{64}$/.test(String(key || ''))) return '';
@@ -222,7 +230,7 @@ function sharedLibraryItems(folder) {
     const base = meta.lessonId + '_' + meta.recordingId;
     if (file.getName() !== base + '_meta.json') continue;
     const audio = byId.get(meta.audioFileId);
-    const hasAudio = Boolean(audio && audio.getSize() > 0 && audio.getName().startsWith(base + '.'));
+    const hasAudio = Boolean(audio && audio.getSize() > 0 && (audio.getName().startsWith(base + '.') || audio.getName().startsWith(base + '_rev-')));
     if (!hasAudio && !(meta.kind === 'text' && String(meta.edoSpelling || '').trim())) continue;
     seen.add(meta.recordingId);
     const english = String(meta.englishWord || '').trim();
@@ -247,30 +255,18 @@ function sharedLibraryItems(folder) {
       cloudAudioFileId: hasAudio ? meta.audioFileId : undefined, cloudMetadataFileId: file.getId(),
       audioDurationSec: Number(meta.durationSec) || 0, isSampleData: false, isCommunity: true,
       syncStatus: 'synced_to_drive', status: hasAudio ? (spelling ? 'awaiting_review' : 'needs_writing') : 'needs_audio',
+      version: Number(meta.version) || 0,
       reviewStatus: meta.reviewStatus || 'pending_approval',
       approvedBy: meta.approvedBy || undefined,
       distinctListenersCount: Array.isArray(meta.distinctListeners) ? meta.distinctListeners.length : 0,
       autoLocked: Boolean(meta.autoLocked),
       updatedAt: meta.updatedAt || meta.uploadedAt || '2026-01-01T00:00:00Z',
       createdAt: meta.uploadedAt || '2026-01-01T00:00:00Z',
-      playbackPermission: permissions.playback === 'denied' ? 'denied' : 'granted',
+      playbackPermission: permissions.playback === 'granted' ? 'granted' : 'denied',
       dialect: String(meta.voiceContributor && meta.voiceContributor.dialect || '') });
   }
 
-  // Prune deleted/trashed files from completed question ledger so curriculum items can return to Teach Edo
-  const completed = completedQuestions();
-  let changed = false;
-  for (const qId of Object.keys(completed)) {
-    const recId = completed[qId];
-    if (!seen.has(recId)) {
-      delete completed[qId];
-      changed = true;
-    }
-  }
-  if (changed) {
-    PropertiesService.getScriptProperties().setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
-  }
-
+  // Answered history is durable. Missing files leave Library, never reopen Teach Edo.
   return items;
 }
 
@@ -278,7 +274,7 @@ function sharedLibraryItems(folder) {
  * Strict Security Check: Verifies that a file belongs directly to the target studio folder.
  */
 function isFileInStudioFolder(file) {
-  if (!file) return false;
+  if (!file || file.isTrashed()) return false;
   const parents = file.getParents();
   while (parents.hasNext()) {
     if (parents.next().getId() === TARGET_FOLDER_ID) {
@@ -389,72 +385,44 @@ function doPost(e) {
 
     if (action === 'get_library' || action === 'get_question_state') {
       const props = PropertiesService.getScriptProperties();
-      const items = sharedLibraryItems(folder);
-
-      // Reconcile with actual non-trashed files in Google Drive:
-      // An item is only completed if its valid metadata and audio still exist in Drive!
-      const activeLessonIds = {};
-      const activeRecordingIds = {};
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        if (it.sourceLessonId) activeLessonIds[it.sourceLessonId] = true;
-        if (it.id) activeLessonIds[it.id] = true;
-        if (it.recordingId) activeRecordingIds[it.recordingId] = true;
+      const items = action === 'get_library' || !props.getProperty('ANSWERED_LEDGER_READY_V2') ? sharedLibraryItems(folder) : [];
+      props.setProperty('ANSWERED_LEDGER_READY_V2', 'true');
+      const tombstones = readTombstones();
+      return createJsonResponse({ status: 'success', action: action, checkedAt: new Date().toISOString(),
+        items: action === 'get_library' ? items.filter(function(item) { return !tombstones[item.recordingId] && !tombstones[item.cloudMetadataFileId]; }) : undefined,
+        tombstones: Object.keys(tombstones), answeredQuestionIds: Object.keys(completedQuestions()),
+        answeredEnglish: answeredRecords().map(function(record) { return record.english; }) });
+    }
+    if (action === 'update_contribution') {
+      const file = DriveApp.getFileById(String(payload.metadataFileId || ''));
+      if (!isFileInStudioFolder(file) || !file.getName().endsWith('_meta.json')) return createJsonResponse({ status: 'error', code: 'ACCESS_DENIED', message: 'Contribution is not in the active collection.' });
+      const meta = JSON.parse(file.getBlob().getDataAsString());
+      if (meta.reviewStatus === 'approved_locked') return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'An administrator must unlock this lesson before it can be edited.' });
+      const version = Number(meta.version) || 0;
+      if (payload.mutationId && meta.lastMutationId === payload.mutationId) return createJsonResponse({ status: 'success', verified: true, version: version, audioFileId: meta.audioFileId || null, metadataFileId: file.getId(), duplicate: true });
+      if (!Number.isSafeInteger(payload.expectedVersion) || payload.expectedVersion !== version) return createJsonResponse({ status: 'conflict', code: 'REVISION_CONFLICT', message: 'Another user changed this lesson. Your draft is preserved; reopen the current lesson before editing.' });
+      const english = payload.english === undefined ? String(meta.englishWord || '') : String(payload.english).trim();
+      const spelling = payload.edoText === undefined ? String(meta.edoSpelling || '') : String(payload.edoText).trim();
+      if (!english || english.length > 2000 || spelling.length > 5000) return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid English or Edo text.' });
+      let newAudio;
+      const mime = String(payload.mimeType || '').split(';')[0].toLowerCase();
+      if (payload.audioBase64 !== undefined) {
+        if (!ALLOWED_MIME_TYPES[mime] || typeof payload.audioBase64 !== 'string' || payload.audioBase64.length > MAX_BASE64_CHARS) return createJsonResponse({ status: 'error', code: 'INVALID_AUDIO', message: 'Invalid audio format or size.' });
+        const bytes = Utilities.base64Decode(payload.audioBase64);
+        if (!bytes.length || bytes.length > MAX_AUDIO_BYTES) return createJsonResponse({ status: 'error', code: 'INVALID_AUDIO', message: 'Invalid audio size.' });
+        if (!payload.permissions || payload.permissions.playback !== 'granted') return createJsonResponse({ status: 'error', code: 'CONSENT_REQUIRED', message: 'Confirm the speaker’s playback permission before sharing a replacement voice.' });
+        newAudio = folder.createFile(Utilities.newBlob(bytes, mime, meta.lessonId + '_' + meta.recordingId + '_rev-' + (version + 1) + '.' + ALLOWED_MIME_TYPES[mime]));
       }
-
-      let tombstones = {};
-      try {
-        tombstones = JSON.parse(props.getProperty('DELETED_RECORDS_V1') || '{}') || {};
-      } catch (_) {}
-
-      let completed = completedQuestions();
-      let changedCompleted = false;
-      let changedTombstones = false;
-      const prunedCompleted = {};
-
-      for (const qId of Object.keys(completed)) {
-        const recId = completed[qId];
-        if (activeRecordingIds[recId] || activeLessonIds[qId]) {
-          prunedCompleted[qId] = recId;
-        } else {
-          // File was deleted directly in Google Drive!
-          changedCompleted = true;
-          if (recId && !tombstones[recId]) {
-            tombstones[recId] = new Date().toISOString();
-            changedTombstones = true;
-          }
-          if (qId && !tombstones[qId]) {
-            tombstones[qId] = new Date().toISOString();
-            changedTombstones = true;
-          }
-        }
-      }
-
-      // Check known recordings registry for any that vanished from Drive
-      let known = {};
-      try { known = JSON.parse(props.getProperty('KNOWN_RECORDINGS_V1') || '{}') || {}; } catch (_) {}
-      for (const recId of Object.keys(known)) {
-        if (!activeRecordingIds[recId] && !tombstones[recId]) {
-          tombstones[recId] = new Date().toISOString();
-          changedTombstones = true;
-        }
-      }
-
-      if (changedCompleted) {
-        props.setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(prunedCompleted));
-      }
-      if (changedTombstones) {
-        props.setProperty('DELETED_RECORDS_V1', JSON.stringify(tombstones));
-      }
-
-      return createJsonResponse({
-        status: 'success',
-        action: action,
-        checkedAt: new Date().toISOString(),
-        items: action === 'get_library' ? items : undefined,
-        tombstones: Object.keys(tombstones),
-        answeredQuestionIds: Object.keys(prunedCompleted)
-      });
+      rememberCompletedQuestion(meta.lessonId, meta.recordingId, meta.englishWord, true);
+      archiveRevision(folder, file, meta, verifiedContributor);
+      meta.lastMutationId = String(payload.mutationId || '');
+      meta.englishWord = english; meta.edoSpelling = spelling;
+      if (newAudio) { meta.audioFileId = newAudio.getId(); meta.audioFileName = newAudio.getName(); meta.audioMimeType = mime; meta.audioSizeBytes = newAudio.getSize(); meta.durationSec = Math.max(0, Number(payload.durationSec) || 0); meta.permissions = { playback: 'granted', aiVoiceTraining: 'denied', statementVersion: '1' }; }
+      meta.status = meta.audioFileId ? (spelling ? 'spelling_submitted' : 'needs_spelling') : 'needs_audio';
+      meta.reviewStatus = 'pending_approval';
+      file.setContent(JSON.stringify(meta, null, 2));
+      rememberCompletedQuestion(meta.lessonId, meta.recordingId, english, true);
+      return createJsonResponse({ status: 'success', action: action, verified: true, version: meta.version, metadataFileId: file.getId(), audioFileId: meta.audioFileId || null });
     }
     if (action === 'update_recording_permissions') {
       let file;
@@ -534,7 +502,7 @@ function doPost(e) {
       for (const file of metadataFiles) {
         let meta;
         try { meta = JSON.parse(file.getBlob().getDataAsString()); } catch (_) { continue; }
-        if (meta && meta.kind === 'text' && /^[a-zA-Z0-9_-]{2,80}$/.test(meta.lessonId || '') && /^text-[a-f0-9]{64}$/.test(meta.recordingId || '') &&
+        if (meta && meta.kind === 'text' && !byId.has(meta.audioFileId) && /^[a-zA-Z0-9_-]{2,80}$/.test(meta.lessonId || '') && /^text-[a-f0-9]{64}$/.test(meta.recordingId || '') &&
             file.getName() === meta.lessonId + '_' + meta.recordingId + '_meta.json' && String(meta.edoSpelling || '').trim() && !textRecords.has(meta.recordingId)) {
           const english = String(meta.englishWord || '').trim().toLowerCase();
           textRecords.add(meta.recordingId);
@@ -549,7 +517,7 @@ function doPost(e) {
             !byId.has(meta.audioFileId) || recordings.has(meta.recordingId)) continue;
         const audio = byId.get(meta.audioFileId);
         const expectedBase = meta.lessonId + '_' + meta.recordingId;
-        if (audio.getSize() === 0 || !audio.getName().startsWith(expectedBase + '.') ||
+        if (audio.getSize() === 0 || !(audio.getName().startsWith(expectedBase + '.') || audio.getName().startsWith(expectedBase + '_rev-')) ||
             file.getName() !== expectedBase + '_meta.json') continue;
         recordings.add(meta.recordingId);
         rememberCompletedQuestion(meta.lessonId, meta.recordingId, meta.englishWord);
@@ -588,6 +556,7 @@ function doPost(e) {
 
       const lessonId = String(payload.lessonId || '').trim();
       const recordingId = String(payload.recordingId || '').trim();
+      if (readTombstones()[recordingId]) return createJsonResponse({ status: 'error', code: 'RECORD_DELETED', message: 'This record was deleted by the administrator. Local recovery audio is preserved.' });
       const english = String(payload.english || '').trim();
       const edoText = String(payload.edoText || '').trim();
       const audioBase64 = payload.audioBase64;
@@ -655,59 +624,34 @@ function doPost(e) {
       const audioFileName = lessonId + '_' + recordingId + '.' + extension;
       const metaFileName = lessonId + '_' + recordingId + '_meta.json';
 
-      const existingAudioFiles = folder.getFilesByName(audioFileName);
+      // A delayed original upload must never overwrite a later community revision.
       const existingMetaFiles = folder.getFilesByName(metaFileName);
-
       if (existingMetaFiles.hasNext()) {
-        const checkMetaFile = existingMetaFiles.next();
+        const existingMeta = existingMetaFiles.next();
         try {
-          const checkMeta = JSON.parse(checkMetaFile.getBlob().getDataAsString());
-          if (checkMeta && checkMeta.reviewStatus === 'approved_locked' && verifiedContributor.role !== 'admin') {
-            return createJsonResponse({
-              status: 'error',
-              code: 'ENTRY_LOCKED',
-              message: 'This lesson has been approved and locked by an administrator and cannot be modified.'
-            });
-          }
-        } catch (_) {}
-      }
-
-      // Re-query if consumed
-      const freshAudioFiles = folder.getFilesByName(audioFileName);
-      const freshMetaFiles = folder.getFilesByName(metaFileName);
-
-      if (freshAudioFiles.hasNext() && freshMetaFiles.hasNext()) {
-        const existingAudio = freshAudioFiles.next();
-        const existingMeta = freshMetaFiles.next();
-
-        if (existingAudio.getSize() > 0 && existingMeta.getSize() > 0) {
-          try {
-            const parsedMeta = JSON.parse(existingMeta.getBlob().getDataAsString());
-            if (parsedMeta.recordingId === recordingId &&
-                parsedMeta.lessonId === lessonId &&
-                parsedMeta.audioFileId === existingAudio.getId()) {
-              rememberCompletedQuestion(lessonId, recordingId, english, true);
-              return createJsonResponse({
-                status: 'success',
-                duplicate: true,
-                verified: true,
-                action: 'upload_recording',
-                lessonId: lessonId,
-                recordingId: recordingId,
-                audioFileId: existingAudio.getId(),
-                metadataFileId: existingMeta.getId(),
-                message: 'Both audio and metadata already verified in Google Drive. Existing record preserved.'
-              });
+          const parsedMeta = JSON.parse(existingMeta.getBlob().getDataAsString());
+          if (parsedMeta.reviewStatus === 'approved_locked' && normalizedEnglish(parsedMeta.englishWord) !== normalizedEnglish(english)) return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'Approved lesson preserved.' });
+          if (parsedMeta.recordingId === recordingId && parsedMeta.lessonId === lessonId && parsedMeta.audioFileId) {
+            const currentAudio = DriveApp.getFileById(parsedMeta.audioFileId);
+            if (isFileInStudioFolder(currentAudio) && currentAudio.getSize() > 0) {
+              rememberCompletedQuestion(lessonId, recordingId, parsedMeta.englishWord || english, true);
+              return createJsonResponse({ status: 'success', duplicate: true, verified: true,
+                action: 'upload_recording', lessonId: lessonId, recordingId: recordingId,
+                audioFileId: currentAudio.getId(), metadataFileId: existingMeta.getId(),
+                message: 'Existing contribution and its current revision preserved.' });
             }
-          } catch (e) {
-            Logger.log('Existing metadata unreadable; proceeding with clean re-creation.');
           }
+          if (parsedMeta.reviewStatus === 'approved_locked') {
+            return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'An administrator must unlock this lesson before repair.' });
+          }
+        } catch (e) {
+          return createJsonResponse({ status: 'error', code: 'EXISTING_RECORD_UNAVAILABLE', message: 'Existing metadata requires administrator repair; original files preserved.' });
         }
       }
 
       // Explicit Opt-In: AI training defaults strictly to DENIED unless explicitly granted
       const explicitAiConsent = (permissions.aiVoiceTraining === 'granted') ? 'granted' : 'denied';
-      const playbackConsent = (permissions.playback === 'denied') ? 'denied' : 'granted';
+      const playbackConsent = permissions.playback === 'granted' ? 'granted' : 'denied';
 
       // Status: 'needs_spelling' if spelling is blank; 'spelling_submitted' if provided
       const recordingStatus = edoText.length > 0 ? 'spelling_submitted' : 'needs_spelling';
@@ -918,7 +862,7 @@ function doPost(e) {
       }
 
       // Check 4: Explicit Playback Consent Check (only deny if explicitly set to 'denied')
-      if (metaContent.permissions && metaContent.permissions.playback === 'denied') {
+      if (!metaContent.permissions || metaContent.permissions.playback !== 'granted') {
         return createJsonResponse({
           status: 'error',
           code: 'PLAYBACK_PERMISSION_DENIED',
@@ -1010,6 +954,7 @@ function doPost(e) {
         });
       }
 
+      archiveRevision(folder, metaFile, metaContent, verifiedContributor);
       // Update spelling and stamp server-verified identity
       metaContent.edoSpelling = edoSpelling;
       metaContent.status = 'spelling_submitted'; // Awaiting community review
@@ -1023,7 +968,6 @@ function doPost(e) {
       metaFile.setContent(JSON.stringify(metaContent, null, 2));
 
       return createJsonResponse({
-        status: 'success',
         action: 'submit_spelling',
         recordingId: metaContent.recordingId,
         lessonId: metaContent.lessonId,
@@ -1061,6 +1005,8 @@ function doPost(e) {
       } catch (e) {
         return createJsonResponse({ status: 'error', code: 'METADATA_UNREADABLE', message: 'Metadata file is unreadable.' });
       }
+      if (!String(meta.edoSpelling || '').trim() || !meta.audioFileId) return createJsonResponse({ status: 'error', code: 'INCOMPLETE_LESSON', message: 'Complete spelling and voice before approving.' });
+      archiveRevision(folder, metaFile, meta, verifiedContributor);
       meta.reviewStatus = 'approved_locked';
       meta.approvedBy = {
         id: verifiedContributor.id,
@@ -1156,19 +1102,7 @@ function doPost(e) {
         }
       }
 
-      // Automatically lock when 5 distinct verified listeners have played the recording
-      if (meta.distinctListeners.length >= 5 && meta.reviewStatus !== 'approved_locked') {
-        meta.reviewStatus = 'approved_locked';
-        meta.autoLocked = true;
-        meta.lockedReason = 'auto_verified_listens';
-        meta.approvedBy = {
-          id: 'system_auto_lock',
-          name: 'Auto-Verified (5 Listeners)',
-          approvedAt: new Date().toISOString()
-        };
-      }
-
-      meta.updatedAt = new Date().toISOString();
+      // Listening is not administrator approval. Playback counts never change review status.
       metaFile.setContent(JSON.stringify(meta, null, 2));
 
       return createJsonResponse({
@@ -1240,14 +1174,8 @@ function doPost(e) {
       };
       props.setProperty('DELETED_RECORDS_V1', JSON.stringify(tombstones));
 
-      // Remove from COMPLETED_QUESTIONS_V1 so curriculum prompts return to Teach Edo
-      try {
-        const completed = completedQuestions();
-        if (lessonId && completed[lessonId]) {
-          delete completed[lessonId];
-          props.setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
-        }
-      } catch (_) {}
+      // Deletion hides the lesson; the answered question remains permanently retired.
+      rememberCompletedQuestion(lessonId, recordingId, meta.englishWord, true);
 
       return createJsonResponse({
         status: 'success',
@@ -1504,5 +1432,59 @@ function runFullGatewaySelfTest() {
     } else {
       Logger.log('=== TEST SUITE FINISHED WITH FAILURES ===');
     }
+  }
+}
+
+/** Owner-run, disposable synthetic transport audit. Never records or invents human Edo. */
+function runCloudArchitectureAudit() {
+  const props = PropertiesService.getScriptProperties();
+  const directory = JSON.parse(props.getProperty('CONTRIBUTOR_DIRECTORY') || '{}');
+  const admin = Object.keys(directory).find(function(key) { return directory[key].role === 'admin'; });
+  if (!admin) throw new Error('Configured owner administrator required.');
+  const run = Utilities.getUuid().replace(/-/g, '');
+  const prefix = 'test-architecture-' + run;
+  const folder = DriveApp.getFolderById(TARGET_FOLDER_ID);
+  const checks = [];
+  function request(payload) { return JSON.parse(doPost({ postData: { contents: JSON.stringify(payload) } }).getContent()); }
+  function check(name, condition) { checks.push({ name: name, passed: Boolean(condition) }); if (!condition) throw new Error(name); }
+  const wav = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+  const lesson = prefix + '-v'; const recording = 'rec-' + run;
+  const before = []; const initial = folder.getFiles(); while (initial.hasNext()) before.push(initial.next().getId());
+  let cleanup = 0;
+  try {
+    const upload = { action: 'upload_recording', lessonId: lesson, recordingId: recording,
+      english: 'SYNC TEST disposable transport ' + run, edoText: '', mimeType: 'audio/wav', audioBase64: wav,
+      permissions: { playback: 'granted', aiVoiceTraining: 'denied' } };
+    const voice = request(upload);
+    check('Public token-free voice upload verified', voice.verified && voice.recordingStatus === 'needs_spelling');
+    const stream = request({ action: 'stream_audio', fileId: voice.audioFileId });
+    check('Permitted audio bytes unchanged', stream.audioDataUrl === 'data:audio/wav;base64,' + wav);
+    const spelling = request({ action: 'update_contribution', metadataFileId: voice.metadataFileId, expectedVersion: 0, mutationId: run, edoText: 'SYNC TEST spelling placeholder' });
+    check('Missing spelling updates original metadata', spelling.verified && spelling.metadataFileId === voice.metadataFileId && spelling.audioFileId === voice.audioFileId);
+    check('Stale revision rejected', request({ action: 'update_contribution', metadataFileId: voice.metadataFileId, expectedVersion: 0, edoText: 'stale' }).code === 'REVISION_CONFLICT');
+    check('Admin approval succeeds', request({ action: 'admin_lock_entry', metadataFileId: voice.metadataFileId, authToken: admin }).reviewStatus === 'approved_locked');
+    check('Approved edits rejected', request({ action: 'update_contribution', metadataFileId: voice.metadataFileId, expectedVersion: spelling.version, edoText: 'stale' }).code === 'ENTRY_LOCKED');
+    const duplicate = request(upload);
+    check('Delayed original upload preserves revisions', duplicate.duplicate && duplicate.metadataFileId === voice.metadataFileId);
+    check('Public deletion rejected', request({ action: 'admin_delete_entry', metadataFileId: voice.metadataFileId }).code === 'UNAUTHORIZED_ADMIN');
+    check('Owner deletion creates tombstone', request({ action: 'admin_delete_entry', metadataFileId: voice.metadataFileId, authToken: admin }).tombstoneRecorded);
+    check('Old upload cannot resurrect deleted lesson', request(upload).code === 'RECORD_DELETED');
+    const text = request({ action: 'upsert_text_contribution', lessonId: prefix + '-t', recordingId: 'text-' + hashSha256(run),
+      english: 'SYNC TEST spelling only ' + run, edoText: 'SYNC TEST placeholder', category: 'word' });
+    check('Public spelling-only save verified', text.verified);
+    const attached = request({ action: 'update_contribution', metadataFileId: text.metadataFileId, expectedVersion: 0, mutationId: run + 'a', audioBase64: wav, mimeType: 'audio/wav', permissions: { playback: 'granted' } });
+    check('Voice attaches to original spelling metadata', attached.verified && attached.metadataFileId === text.metadataFileId && attached.audioFileId);
+    const auditLesson = 'audit-' + run; const auditEnglish = 'disposable audit ' + run;
+    rememberCompletedQuestion(auditLesson, recording, auditEnglish);
+    check('Fresh public question state contains permanent history', request({ action: 'get_question_state' }).answeredEnglish.indexOf(auditEnglish) !== -1);
+    props.deleteProperty('ANSWERED_Q_' + hashSha256(auditEnglish)); // Only this unique disposable ledger fixture.
+    const library = request({ action: 'get_library' });
+    check('Synthetic fixtures excluded from public Library', library.items.every(function(item) { return item.sourceLessonId.indexOf(prefix) !== 0; }));
+  } finally {
+    const files = folder.getFiles();
+    while (files.hasNext()) { const file = files.next(); if (file.getName().indexOf(prefix) === 0 && before.indexOf(file.getId()) < 0) { file.setTrashed(true); cleanup++; } }
+    const remaining = folder.getFiles(); const current = []; while (remaining.hasNext()) current.push(remaining.next().getId());
+    checks.push({ name: 'All pre-existing Drive files preserved', passed: before.every(function(id) { return current.indexOf(id) !== -1; }) });
+    Logger.log(JSON.stringify({ runId: run, syntheticAudio: true, humanRecordingTested: false, cleanedNewFiles: cleanup, checks: checks }));
   }
 }

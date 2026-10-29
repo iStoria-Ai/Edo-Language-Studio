@@ -129,7 +129,7 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
           tombstones[qId] = new Date().toISOString();
         }
       }
-      scriptProperties.set('COMPLETED_QUESTIONS_V1', JSON.stringify(prunedCompleted));
+      scriptProperties.set('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
       scriptProperties.set('DELETED_RECORDS_V1', JSON.stringify(tombstones));
 
       return {
@@ -138,7 +138,7 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
         checkedAt: new Date().toISOString(),
         items: activeItems,
         tombstones: Object.keys(tombstones),
-        answeredQuestionIds: Object.keys(prunedCompleted)
+        answeredQuestionIds: Object.keys(completed)
       };
     }
 
@@ -244,8 +244,8 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
   assert.equal(libCardsB[0].edoText, 'Ikhinmwin');
   console.log('✓ Both Device A and Device B display completed lesson from Google Drive.');
 
-  // --- Step 3b: Verify temporary local audio is removed after verified cloud sync ---
-  console.log('--- Step 3b: Verify temporary local audio is removed after verified sync ---');
+  // --- Step 3b: Verify original recovery audio is preserved after verified cloud sync ---
+  console.log('--- Step 3b: Verify original recovery audio is preserved after verified sync ---');
   const validAudioDataUrl = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==';
   // Device A had local entry
   const localA = {
@@ -270,8 +270,8 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
   await deviceA.api.reconcileLocalLibraryWithCloud(snapshotA);
   const reconciledLibA = await deviceA.api.loadLibrary();
   const treeEntryA = reconciledLibA.entries.find(e => e.id === 'word-tree');
-  assert.equal(treeEntryA.audioDataUrl, undefined, 'Temporary local audio bytes must be removed after verified sync');
-  console.log('✓ Temporary local audio bytes safely removed; Drive remains permanent authority.');
+  assert.equal(treeEntryA.audioDataUrl, validAudioDataUrl, 'Protected original recovery audio must not be erased by cache cleanup');
+  console.log('✓ Recovery audio remains protected; Drive alone controls public Library visibility.');
 
   // --- Step 4: Delete its authoritative files directly from Google Drive ---
   console.log('--- Step 4: Delete authoritative files directly from Google Drive ---');
@@ -300,8 +300,7 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
   await deviceA.api.reconcileLocalLibraryWithCloud(refreshedSnapshotA);
   const localAfterPruneA = await deviceA.api.loadLibrary();
   const treeLocal = localAfterPruneA.entries.find(e => e.id === 'word-tree');
-  assert.equal(treeLocal.hasAudio, false, 'Deleted lesson must revert to unrecorded state');
-  assert.equal(treeLocal.cloudMetadataFileId, undefined);
+  assert.equal(treeLocal.audioDataUrl, validAudioDataUrl, 'Deleted cloud lessons leave protected recovery data untouched');
 
   // Even if old local entry exists, mergeCommunityEntries will not show it
   const mergedEmpty = deviceA.api.mergeCommunityEntries([localA], refreshedSnapshotA.entries, [], refreshedSnapshotA.tombstones);
@@ -309,12 +308,12 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
   assert.equal(finalLibraryCards.length, 0, 'Old local copy cannot restore deleted lesson into public Library');
   console.log('✓ Old local storage copies strictly prevented from repopulating the Library.');
 
-  // --- Step 8: Confirm eligible English word returns to Teach Edo ---
-  console.log('--- Step 8: Confirm eligible English word returns to Teach Edo ---');
-  assert(!refreshedSnapshotA.answeredQuestionIds.includes('word-tree'), 'word-tree must be removed from answered IDs');
+  // --- Step 8: Confirm answered English word stays retired ---
+  console.log('--- Step 8: Confirm answered English word stays retired ---');
+  assert(refreshedSnapshotA.answeredQuestionIds.includes('word-tree'), 'Answered history survives deletion');
   const answeredIds = new Set(refreshedSnapshotA.answeredQuestionIds);
-  assert(!answeredIds.has('word-tree'), 'Word Tree is now unanswered and returns to Teach Edo bank');
-  console.log('✓ "Tree" successfully returned to Teach Edo questions.');
+  assert(answeredIds.has('word-tree'), 'Deleted files do not retire answered history');
+  console.log('✓ "Tree" remains excluded from Teach Edo questions.');
 
   // --- Step 9: Confirm genuine new offline recording survives until uploaded ---
   console.log('--- Step 9: Confirm genuine new offline recording survives ---');
@@ -348,13 +347,14 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
   console.log('--- Step 10: Testing One-Time Global Library Reset (edo_library_reset_v2) ---');
   assert.equal(await deviceB.api.isLibraryResetCompleted(), false);
   // Device B has old stale localStorage keys and audio
+  await deviceB.api.loadLibrary();
   deviceB.storage.set('edo_language_studio_entries_v1', 'legacy-stale-entries');
   deviceB.storage.set('edo_community_audio_stale123', 'stale-audio-bytes');
 
   // Execute reset with empty cloud snapshot
   await deviceB.api.executeOneTimeLibraryReset(refreshedSnapshotB);
   assert.equal(await deviceB.api.isLibraryResetCompleted(), true);
-  assert(!deviceB.storage.has('edo_language_studio_entries_v1'), 'Legacy v1 storage removed');
+  assert(deviceB.storage.has('edo_language_studio_entries_v1'), 'Legacy recovery storage is preserved');
   assert(!deviceB.storage.has('edo_community_audio_stale123'), 'Stale audio cache removed');
 
   // Reopening/reloading confirms reset stays complete and library stays empty
