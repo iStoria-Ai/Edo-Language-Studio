@@ -56,7 +56,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   onFinishForNow,
   onStepStateChange
 }) => {
-  const [questionIndex, setQuestionIndex] = useState(() => Math.max(0, questions.findIndex(q => !q.audioDataUrl)));
+  const [questionIndex, setQuestionIndex] = useState(() => Math.max(0, questions.findIndex(q => !q.hasAudio)));
   const [isSaving, setIsSaving] = useState(false);
   const saveLock = useRef(false);
   const [stepState, setStepState] = useState<TeachStepState>(initialStepState);
@@ -319,7 +319,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     setQuestionIndex(prev => {
       for (let offset = 1; offset <= totalQuestions; offset++) {
         const index = (prev + offset) % totalQuestions;
-        if (!questions[index].audioDataUrl) return index;
+        if (!questions[index].hasAudio) return index;
       }
       return (prev + 1) % totalQuestions;
     });

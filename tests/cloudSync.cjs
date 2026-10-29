@@ -465,23 +465,88 @@ function generateSampleWav() {
     assert.equal(remainingQueue[0].attempts, 1);
   }
 
-  // Test 11: Live unauthenticated check to deployed Google Apps Script gateway (when network available)
-  try {
+  // Test 10B: fetchNeedsSpellingQueue and submitSpellingToGateway
+  {
+    let capturedAction = null;
+    let capturedPayload = null;
+    const mockFetch = async (_url, options) => {
+      capturedPayload = JSON.parse(options.body);
+      capturedAction = capturedPayload.action;
+      if (capturedAction === 'get_needs_spelling') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'success',
+            action: 'get_needs_spelling',
+            count: 1,
+            items: [{ recordingId: 'rec-1', lessonId: 'lesson-1', englishWord: 'Hand', audioFileId: 'aud-1', metadataFileId: 'meta-1' }]
+          })
+        };
+      }
+      if (capturedAction === 'submit_spelling') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            status: 'success',
+            action: 'submit_spelling',
+            status: 'spelling_submitted',
+            message: 'Edo spelling attached successfully.'
+          })
+        };
+      }
+      return { ok: false, status: 400, json: async () => ({ status: 'error' }) };
+    };
+
+    const service = loadCloudService(mockFetch);
+    const queueRes = await service.fetchNeedsSpellingQueue('test-token');
+    assert.equal(queueRes.ok, true);
+    assert.equal(queueRes.items.length, 1);
+    assert.equal(queueRes.items[0].englishWord, 'Hand');
+    assert.equal(capturedPayload.action, 'get_needs_spelling');
+
+    const submitRes = await service.submitSpellingToGateway({
+      metadataFileId: 'meta-1',
+      edoSpelling: 'Ọbọ',
+      authToken: 'test-token'
+    });
+    assert.equal(submitRes.ok, true);
+    assert.equal(capturedPayload.action, 'submit_spelling');
+    assert.equal(capturedPayload.edoSpelling, 'Ọbọ');
+  }
+
+  // A verified private upload is synced even when public playback is withheld.
+  {
+    const entry = { id: 'private-sync', hasAudio: true, audioDataUrl: sampleAudio, english: 'Test' };
+    let synced = false;
+    const service = loadCloudService(async (url, options) => {
+      const payload = JSON.parse(options.body);
+      assert.equal(payload.authToken, '', 'Community sync must not require a token');
+      return { ok: true, status: 200, url, json: async () => payload.action === 'upload_recording'
+        ? { status: 'success', audioFileId: 'private-audio', metadataFileId: 'private-meta', verified: true }
+        : { status: 'error', code: 'PLAYBACK_PERMISSION_DENIED', message: 'Playback denied' } };
+    });
+    service.enqueueForBackgroundUpload(entry.id);
+    await service.processBackgroundUploadQueue(() => [entry], async () => { synced = true; }, async () => {
+      assert.fail('A verified upload with restricted playback must not be marked failed');
+    });
+    assert.equal(synced, true);
+    assert.equal(service.getPersistentUploadQueue().length, 0);
+    assert.equal(entry.audioDataUrl, sampleAudio, 'Original audio must be retained');
+  }
+
+  // Explicit deployment gate: failures must propagate rather than pass as offline skips.
+  // Run with EDO_VERIFY_LIVE=1 npm test before deploying the token-free app.
+  if (process.env.EDO_VERIFY_LIVE === '1') {
     const service = loadCloudService(globalThis.fetch);
     const health = await service.checkGatewayHealth();
-    if (health.ok) {
-      assert.equal(health.data?.service, 'Edo Language Studio Gateway');
-      assert.equal(health.data?.folderConnected, true);
-
-      const postPing = await service.pingGatewayPost('');
-      assert.equal(postPing.httpStatus, 200);
-      assert.equal(postPing.data?.code, 'UNAUTHORIZED');
-      console.log('✓ Live Google Apps Script Gateway verified (GET ok, POST 401 UNAUTHORIZED)');
-    } else {
-      console.log('ℹ Live gateway check skipped (sandboxed offline environment).');
-    }
-  } catch (err) {
-    console.log('ℹ Live network connection skipped in local sandbox:', err.message);
+    assert.equal(health.ok, true, health.error || 'Live gateway health check failed');
+    assert.equal(health.data?.folderConnected, true);
+    const postPing = await service.pingGatewayPost('');
+    assert.equal(postPing.ok, true, postPing.error || 'Live gateway rejects token-free requests');
+    assert.equal(postPing.data?.verifiedUser?.isCommunity, true);
+    console.log('PASS: Live gateway accepts token-free community requests.');
   }
 
   console.log('PASS: All Cloud Gateway & Instant Save Background Upload Tests passed.');

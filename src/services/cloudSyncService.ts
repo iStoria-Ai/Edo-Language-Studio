@@ -232,7 +232,7 @@ export async function runGatewayConnectionDiagnostics(): Promise<GatewayDiagnost
 
   let summary = '';
   if (getResult.ok && postResult.ok) {
-    summary = 'Live connection fully verified. GET health check and authenticated POST succeeded with zero CORS blocks.';
+    summary = 'Live connection fully verified. GET health check and POST ping succeeded with zero CORS blocks.';
   } else if (getResult.isLoginRedirect || postResult.isLoginRedirect || getResult.isCorsBlocked || postResult.isCorsBlocked) {
     summary = 'Connection blocked. The Apps Script deployment is likely set to "Who has access: Only myself". It must be set to "Who has access: Anyone" to allow browser requests from GitHub Pages without requiring Google login cookies.';
   } else if (getResult.ok && !postResult.ok) {
@@ -310,7 +310,7 @@ export function parseAudioDataUrl(dataUrl: string): { mimeType: string; base64: 
  * Uploads a local voice recording and its metadata to Google Drive through the Apps Script Gateway.
  *
  * Safety & Verification Rules:
- * 1. Checks that the contributor authentication token exists.
+ * 1. Uses community access without a token, or an optional contributor credential.
  * 2. Prepares clean base64 payload and allowed MIME type.
  * 3. Sends POST via text/plain to avoid CORS preflight blocks.
  * 4. Strictly verifies that Google Drive returns confirmed audioFileId AND metadataFileId.
@@ -468,7 +468,7 @@ export async function streamAudioFromGateway(
   fileId: string,
   authToken = getStoredContributorToken(),
   url = getGatewayUrl()
-): Promise<{ ok: boolean; audioDataUrl?: string; error?: string }> {
+): Promise<{ ok: boolean; audioDataUrl?: string; error?: string; errorCode?: string }> {
   const cleanId = (fileId || '').trim();
   if (!cleanId) return { ok: false, error: 'Missing audio file ID' };
 
@@ -503,10 +503,99 @@ export async function streamAudioFromGateway(
 
     return {
       ok: false,
-      error: data.message || data.code || 'Could not retrieve cloud audio stream.'
+      error: data.message || data.code || 'Could not retrieve cloud audio stream.',
+      errorCode: data.code
     };
   } catch (err: any) {
     return { ok: false, error: String(err?.message || err) };
+  }
+}
+
+export interface NeedsSpellingItem {
+  recordingId: string;
+  lessonId: string;
+  englishWord: string;
+  audioFileId: string;
+  metadataFileId: string;
+  durationSec: number;
+  voiceContributor?: { id: string; name: string; role: string };
+  uploadedAt: string;
+}
+
+/**
+ * Retrieves the shared Google Drive queue of voice recordings that need Edo spelling (Person B flow).
+ */
+export async function fetchNeedsSpellingQueue(
+  authToken = getStoredContributorToken(),
+  url = getGatewayUrl()
+): Promise<{ ok: boolean; items: NeedsSpellingItem[]; error?: string }> {
+  try {
+    const payload = {
+      action: 'get_needs_spelling',
+      authToken: authToken.trim()
+    };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      mode: 'cors'
+    });
+    if (!response.ok) {
+      return { ok: false, items: [], error: `Gateway returned HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    if (data.status === 'success' && Array.isArray(data.items)) {
+      return { ok: true, items: data.items };
+    }
+    return { ok: false, items: [], error: data.message || 'Could not fetch spelling queue' };
+  } catch (err: any) {
+    return { ok: false, items: [], error: String(err?.message || err) };
+  }
+}
+
+/**
+ * Submits Edo spelling for an existing voice recording in Google Drive, updating the companion metadata file.
+ */
+export async function submitSpellingToGateway(params: {
+  metadataFileId: string;
+  edoSpelling: string;
+  authToken?: string;
+  url?: string;
+}): Promise<{ ok: boolean; status: string; message: string }> {
+  const token = (params.authToken ?? getStoredContributorToken()).trim();
+  const metaId = params.metadataFileId.trim();
+  const spelling = params.edoSpelling.trim();
+  if (!metaId || !spelling) {
+    return { ok: false, status: 'error', message: 'Missing metadataFileId or edoSpelling' };
+  }
+  const payload = {
+    action: 'submit_spelling',
+    authToken: token,
+    metadataFileId: metaId,
+    edoSpelling: spelling
+  };
+  const url = params.url || getGatewayUrl();
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      mode: 'cors'
+    });
+    if (!response.ok) {
+      return { ok: false, status: 'error', message: `Gateway HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    const isSuccess = data.status === 'success' || data.status === 'spelling_submitted';
+    return {
+      ok: isSuccess,
+      status: data.status,
+      message: data.message || (isSuccess ? 'Spelling submitted successfully' : 'Failed to submit spelling')
+    };
+  } catch (err: any) {
+    return { ok: false, status: 'error', message: String(err?.message || err) };
   }
 }
 
@@ -635,7 +724,8 @@ export async function processBackgroundUploadQueue(
 
       // Step 2: Verification Check — Confirm cloud audio can be retrieved and played
       const streamVerify = await streamAudioFromGateway(uploadResult.audioFileId, token);
-      if (!streamVerify.ok || !streamVerify.audioDataUrl) {
+      const playbackRestricted = uploadResult.verified === true && streamVerify.errorCode === 'PLAYBACK_PERMISSION_DENIED';
+      if ((!streamVerify.ok || !streamVerify.audioDataUrl) && !playbackRestricted) {
         // Cloud audio retrieval not yet verified; DO NOT delete local audio!
         const currentQueue = getPersistentUploadQueue();
         const queueItem = currentQueue.find(q => q.lessonId === item.lessonId);

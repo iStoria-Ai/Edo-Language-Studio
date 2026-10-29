@@ -12,6 +12,7 @@ import {
 import {
   uploadRecordingToGateway,
   streamAudioFromGateway,
+  submitSpellingToGateway,
   enqueueForBackgroundUpload,
   processBackgroundUploadQueue
 } from './services/cloudSyncService';
@@ -194,7 +195,7 @@ export const App: React.FC = () => {
               cloudAudioFileId: cloudAudioId,
               cloudMetadataFileId: cloudMetaId,
               syncStatus: 'synced_to_drive' as const,
-              audioDataUrl: undefined, // Safely remove local audio bytes (Requirement 8)
+              audioDataUrl: item.audioDataUrl, // Preserve offline playback, including consent-restricted cloud audio.
               lastSyncAttempt: new Date().toISOString(),
               syncError: undefined
             };
@@ -320,6 +321,7 @@ export const App: React.FC = () => {
 
   // Help Others: Attach writing to an existing voice-recorded contribution (no duplicate record)
   const handleAttachWritingToEntry = async (entryId: string, edoText: string) => {
+    const existing = entries.find(item => item.id === entryId);
     const updated = entries.map((item) => {
       if (item.id !== entryId) return item;
       return {
@@ -332,6 +334,16 @@ export const App: React.FC = () => {
       };
     });
     await persistUpdatedEntries(updated);
+
+    // If already stored in Google Drive, submit spelling to update companion metadata
+    if (existing?.cloudMetadataFileId) {
+      submitSpellingToGateway({
+        metadataFileId: existing.cloudMetadataFileId,
+        edoSpelling: edoText
+      }).catch(err => {
+        console.warn('Could not sync spelling to Google Drive:', err);
+      });
+    }
   };
 
   // Help Others: Attach voice recording to an existing written contribution — Fast & Non-Blocking
