@@ -562,11 +562,12 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
               className="w-full rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition"
             >
               <div className="flex flex-1 items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl bg-[#FAF6EC] flex items-center justify-center shrink-0">
+                <div className="w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center shrink-0">
                   <WordIllustration
+                    id={entry.sourceLessonId || entry.id}
+                    english={entry.english}
                     illustrationKey={entry.illustrationKey}
-                    icon={entry.icon}
-                    emoji={entry.emoji}
+                    imageUrl={entry.imageUrl}
                     size="sm"
                   />
                 </div>
@@ -666,11 +667,12 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-2 border-b border-[#E6DFCF]">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-white border border-[#E0D8C6] flex items-center justify-center">
+                <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
                   <WordIllustration
+                    id={selectedEntry.sourceLessonId || selectedEntry.id}
+                    english={selectedEntry.english}
                     illustrationKey={selectedEntry.illustrationKey}
-                    icon={selectedEntry.icon}
-                    emoji={selectedEntry.emoji}
+                    imageUrl={selectedEntry.imageUrl}
                     size="sm"
                   />
                 </div>

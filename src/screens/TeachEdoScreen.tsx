@@ -447,11 +447,12 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
               {currentQuestion.english}
             </h1>
 
-            <div className="relative w-full flex items-center justify-center mt-1.5 mb-1 min-h-[112px]">
+            <div className="relative w-full flex items-center justify-center mt-2 mb-2 min-h-[140px]">
               <WordIllustration
+                id={currentQuestion.id}
+                english={currentQuestion.english}
                 illustrationKey={currentQuestion.illustrationKey}
-                icon={currentQuestion.icon}
-                emoji={currentQuestion.emoji}
+                imageUrl={currentQuestion.imageUrl}
                 size={stepState === 'writing' ? 'md' : 'lg'}
               />
 

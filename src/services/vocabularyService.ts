@@ -1,5 +1,6 @@
 import starterVocabularyData from '../data/englishVocabulary.json';
 import { EdoEntry, EntryCategory } from '../types/edo';
+import { getVocabularyImageUrl } from './imageService';
 
 const VOCAB_CACHE_KEY = 'edo_online_vocabulary_v1';
 const LAST_FETCH_KEY = 'edo_online_vocab_last_fetch_ts';
@@ -43,6 +44,11 @@ function mapRawToEdoEntry(item: RawVocabularyItem): EdoEntry {
     category: category,
     topic: item.category,
     illustrationKey: item.id.replace(/^(word|phrase|sentence)-/, ''),
+    imageUrl: getVocabularyImageUrl({
+      id: item.id,
+      english: item.english,
+      illustrationKey: item.id.replace(/^(word|phrase|sentence)-/, '')
+    }),
     icon: item.icon || 'BookOpen',
     emoji: item.emoji || '🗣️',
     hasAudio: false,

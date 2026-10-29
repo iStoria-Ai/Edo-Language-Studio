@@ -18,6 +18,7 @@ import {
   formatDuration,
   MicrophoneRecorder
 } from '../services/audioService';
+import { WordIllustration } from '../components/WordIllustration';
 
 interface HelpOthersScreenProps {
   entries: EdoEntry[];
@@ -57,18 +58,21 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
 
+  // Help Others shows only genuinely incomplete cloud lessons backed by Google Drive
   const needsWritingList = entries.filter((e) => {
     if (e.isSampleData) return false;
-    const hasVoice = Boolean((e.hasAudio && !e.isSampleData) || e.cloudAudioFileId || (e.audioDataUrl && !e.isSampleData));
+    if (!e.cloudMetadataFileId) return false;
+    const hasVoice = Boolean(e.cloudAudioFileId || (e.hasAudio && e.isCommunity));
     if (!hasVoice) return false;
     const hasSpelling = Boolean(e.edoText && e.edoText.trim().length > 0);
     return !hasSpelling && (!e.isCommunity || e.playbackPermission === 'granted');
   });
   const needsAudioList = entries.filter((e) => {
     if (e.isSampleData) return false;
+    if (!e.cloudMetadataFileId) return false;
     const hasSpelling = Boolean(e.edoText && e.edoText.trim().length > 0);
     if (!hasSpelling) return false;
-    const hasVoice = Boolean((e.hasAudio && !e.isSampleData) || e.cloudAudioFileId || (e.audioDataUrl && !e.isSampleData));
+    const hasVoice = Boolean(e.cloudAudioFileId || (e.hasAudio && e.isCommunity));
     return !hasVoice;
   });
 
@@ -277,11 +281,20 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
                 </p>
               </div>
 
-              {/* English Phrase / Word */}
-              <div className="pt-0.5">
-                <p className="text-[21px] font-bold text-[#1A241D]">
-                  English: <span className="text-[#18241B]">{currentItem.english}</span>
-                </p>
+              {/* English Phrase / Word with Picture */}
+              <div className="pt-0.5 flex items-center gap-3.5">
+                <WordIllustration
+                  id={currentItem.sourceLessonId || currentItem.id}
+                  english={currentItem.english}
+                  illustrationKey={currentItem.illustrationKey}
+                  imageUrl={currentItem.imageUrl}
+                  size="md"
+                />
+                <div>
+                  <p className="text-[21px] font-bold text-[#1A241D] leading-tight">
+                    English: <span className="text-[#18241B]">{currentItem.english}</span>
+                  </p>
+                </div>
               </div>
 
               {/* Blue Audio Playback Card for Existing Recording */}
@@ -386,8 +399,16 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
                 </p>
               </div>
 
-              <div className="rounded-2xl bg-white border border-[#E2DAC7] p-4 text-center shadow-sm">
-                <span className="text-4xl block mb-1.5">{currentItem.emoji}</span>
+              <div className="rounded-2xl bg-white border border-[#E2DAC7] p-4 flex flex-col items-center text-center shadow-sm">
+                <div className="mb-2">
+                  <WordIllustration
+                    id={currentItem.sourceLessonId || currentItem.id}
+                    english={currentItem.english}
+                    illustrationKey={currentItem.illustrationKey}
+                    imageUrl={currentItem.imageUrl}
+                    size="md"
+                  />
+                </div>
                 <p className="text-[15px] font-semibold text-[#5C675F]">
                   English: {currentItem.english}
                 </p>

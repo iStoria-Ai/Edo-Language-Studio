@@ -803,11 +803,21 @@ function doPost(e) {
 
       while (files.hasNext()) {
         const file = files.next();
+        if (file.isTrashed()) continue;
         const name = file.getName();
         if (name.endsWith('_meta.json')) {
           try {
             const metaContent = JSON.parse(file.getBlob().getDataAsString());
             if (metaContent.status === 'needs_spelling') {
+              // Strictly verify companion audio file exists and is not trashed
+              if (metaContent.audioFileId) {
+                try {
+                  const aFile = DriveApp.getFileById(metaContent.audioFileId);
+                  if (!aFile || aFile.isTrashed() || !isFileInStudioFolder(aFile)) continue;
+                } catch (_) {
+                  continue; // Audio deleted directly from Drive
+                }
+              }
               needsSpellingQueue.push({
                 recordingId: metaContent.recordingId,
                 lessonId: metaContent.lessonId,

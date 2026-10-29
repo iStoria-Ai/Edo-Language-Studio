@@ -51,6 +51,8 @@ export interface EdoEntry {
   category: EntryCategory;
   topic?: string;
   illustrationKey: string;
+  imageUrl?: string;
+  imageAttribution?: string;
   icon?: string;
   emoji: string;
   hasAudio: boolean;
