@@ -251,6 +251,7 @@ export async function runGatewayConnectionDiagnostics(): Promise<GatewayDiagnost
 }
 
 export interface UploadRecordingParams {
+  category?: EdoEntry['category'];
   lessonId: string;
   recordingId?: string;
   english: string;
@@ -366,6 +367,7 @@ export async function uploadRecordingToGateway(
     lessonId,
     recordingId,
     english: params.english || '',
+    category: params.category,
     edoText: params.edoText || '',
     audioBase64: parsedAudio.base64,
     mimeType: parsedAudio.mimeType,
@@ -702,6 +704,7 @@ export async function processBackgroundUploadQueue(
         lessonId: entry.id,
         recordingId: entry.recordingId,
         english: entry.english,
+        category: entry.category,
         edoText: entry.edoText || '',
         audioDataUrl: entry.audioDataUrl,
         durationSec: entry.audioDurationSec || 0,
@@ -748,3 +751,33 @@ export async function processBackgroundUploadQueue(
   }
 }
 
+
+
+export interface DriveCollectionStats {
+  fileCount: number;
+  audioFileCount: number;
+  metadataFileCount: number;
+  wordsCollected: number;
+  voiceRecordings: number;
+  writtenWords: number;
+  phrasesAndSentences: number;
+  totalContributions: number;
+  reviewQueueCount: number;
+  needsHelpCount: number;
+}
+
+/** Fetch current Drive contents; never substitute device counts for a failed cloud request. */
+export async function fetchDriveCollectionStats(url = getGatewayUrl()): Promise<{ stats: DriveCollectionStats; checkedAt: string }> {
+  const response = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'get_collection_stats', authToken: getStoredContributorToken() }),
+    redirect: 'follow', mode: 'cors', cache: 'no-store', signal: AbortSignal.timeout(20000)
+  });
+  if (!response.ok) throw new Error(`Google Drive returned HTTP ${response.status}.`);
+  const data = await response.json();
+  const fields: (keyof DriveCollectionStats)[] = ['fileCount', 'audioFileCount', 'metadataFileCount', 'wordsCollected', 'voiceRecordings', 'writtenWords', 'phrasesAndSentences', 'totalContributions', 'reviewQueueCount', 'needsHelpCount'];
+  if (data.status !== 'success' || !data.stats || !fields.every(key => Number.isSafeInteger(data.stats[key]) && data.stats[key] >= 0)) {
+    throw new Error(data.message || 'Google Drive did not return valid collection totals.');
+  }
+  return { stats: data.stats, checkedAt: String(data.checkedAt || new Date().toISOString()) };
+}

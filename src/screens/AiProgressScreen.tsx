@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { DriveCollectionStats, fetchDriveCollectionStats } from '../services/cloudSyncService';
 import {
   BookOpen,
   Mic,
@@ -19,9 +20,41 @@ interface AiProgressScreenProps {
 }
 
 export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
-  stats,
+  stats: localStats,
   onBackToDashboard
 }) => {
+  const [cloud, setCloud] = useState<DriveCollectionStats | null>(null);
+  const [checkedAt, setCheckedAt] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refreshInFlight = useRef(false);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      if (refreshInFlight.current || document.visibilityState === 'hidden') return;
+      refreshInFlight.current = true;
+      setLoading(true);
+      try {
+        const result = await fetchDriveCollectionStats();
+        if (active) { setCloud(result.stats); setCheckedAt(result.checkedAt); setError(''); }
+      } catch (err) {
+        if (active) { setCloud(null); setError(err instanceof Error ? err.message : 'Unable to check Google Drive.'); }
+      } finally {
+        refreshInFlight.current = false;
+        if (active) setLoading(false);
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 30000);
+    const onFocus = () => void refresh();
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => { active = false; window.clearInterval(interval); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onFocus); };
+  }, [refreshKey]);
+  const stats = cloud || { wordsCollected: 0, voiceRecordings: 0, writtenWords: 0, phrasesAndSentences: 0, totalContributions: 0, reviewQueueCount: 0, needsHelpCount: 0 };
+  const count = (value: number) => cloud ? value.toLocaleString() : '—';
+
   const stages = [
     {
       id: 1,
@@ -89,8 +122,18 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
           <div className="mb-3 px-3.5 py-2 rounded-2xl bg-[#F1ECFA] border border-[#D7C8F3] flex items-start gap-2 text-[11.5px] text-[#442982] font-medium leading-snug">
             <Info className="w-4 h-4 shrink-0 mt-0.5 text-[#6E4BC3]" />
             <span>
-              <strong>Real Community Contributions:</strong> {stats.totalContributions} contribution{stats.totalContributions === 1 ? '' : 's'} recorded. AI model training will activate once collection targets are reached.
+              <strong>Google Drive collection:</strong> {cloud ? `${stats.totalContributions} contribution${stats.totalContributions === 1 ? '' : 's'} currently stored.` : 'Checking current totals…'} AI training has not started.
             </span>
+          </div>
+
+          <div className="mb-3 rounded-xl border border-[#D7C8F3] bg-white p-3 text-xs space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <strong>Live Google Drive totals</strong>
+              <button type="button" disabled={loading} onClick={() => setRefreshKey(key => key + 1)} className="rounded-lg border border-[#D7C8F3] px-2 py-1 text-[#6E4BC3] disabled:opacity-50">{loading ? 'Refreshing…' : 'Refresh'}</button>
+            </div>
+            {error ? <p role="alert" className="text-red-700">Drive totals unavailable: {error} Try Refresh.</p> : <p role="status">{cloud ? `${cloud.fileCount} files · ${cloud.audioFileCount} audio files · ${cloud.metadataFileCount} recording metadata files` : 'Reading the studio folder…'}</p>}
+            {cloud && <p className="text-[#5A665D]">Updated {new Date(checkedAt).toLocaleTimeString()}. Refreshes every 30 seconds. Deleted files leave these totals.</p>}
+            <p className="text-[#5A665D]">This device holds {localStats.totalContributions} local contributions. Local backups are separate from Drive totals. Test files and incomplete recording pairs do not count as learning contributions.</p>
           </div>
 
           {/* 2 x 2 Stats Grid */}
@@ -101,7 +144,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.wordsCollected.toLocaleString()}
+                  {count(stats.wordsCollected)}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Words collected
@@ -115,7 +158,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.voiceRecordings.toLocaleString()}
+                  {count(stats.voiceRecordings)}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Voice recordings
@@ -129,7 +172,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.writtenWords.toLocaleString()}
+                  {count(stats.writtenWords)}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Written words
@@ -143,7 +186,7 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
               </div>
               <div>
                 <p className="text-[19px] font-extrabold text-[#18241B] leading-none">
-                  {stats.phrasesAndSentences.toLocaleString()}
+                  {count(stats.phrasesAndSentences)}
                 </p>
                 <p className="text-[12px] font-semibold text-[#5A665D] mt-1">
                   Phrases &amp; sentences
@@ -156,17 +199,17 @@ export const AiProgressScreen: React.FC<AiProgressScreenProps> = ({
           <div className="mt-3 rounded-2xl bg-white border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between text-[12px]">
             <div>
               <span className="text-[#5C665E]">Review Queue: </span>
-              <strong className="text-[#6E4BC3]">{stats.reviewQueueCount}</strong>
+              <strong className="text-[#6E4BC3]">{count(stats.reviewQueueCount)}</strong>
             </div>
             <div className="h-3.5 w-px bg-[#E0D8C6]" />
             <div>
               <span className="text-[#5C665E]">Needs Help: </span>
-              <strong className="text-[#1D6CE0]">{stats.needsHelpCount}</strong>
+              <strong className="text-[#1D6CE0]">{count(stats.needsHelpCount)}</strong>
             </div>
             <div className="h-3.5 w-px bg-[#E0D8C6]" />
             <div>
               <span className="text-[#5C665E]">AI Status: </span>
-              <strong className="text-[#785502]">{stats.totalContributions > 0 ? 'Collecting' : 'Ready'}</strong>
+              <strong className="text-[#785502]">{!cloud ? 'Unavailable' : stats.totalContributions > 0 ? 'Collecting' : 'Ready'}</strong>
             </div>
           </div>
         </div>

@@ -74,7 +74,7 @@ function getVerifiedContributor(providedToken, action) {
   }
 
   // If token is invalid or omitted, check if action permits community contributor access
-  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling'];
+  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling', 'get_collection_stats'];
   if (communityAllowedActions.indexOf(action) !== -1) {
     // Enforce rate limiting for community uploads via CacheService
     if (action === 'upload_recording') {
@@ -209,6 +209,59 @@ function doPost(e) {
       });
     }
 
+    // Always read the current folder: deleted/trashed files must immediately leave progress totals.
+    if (action === 'get_collection_stats') {
+      const files = folder.getFiles();
+      const byId = new Map();
+      const metadataFiles = [];
+      let fileCount = 0;
+      let audioFileCount = 0;
+      while (files.hasNext()) {
+        const file = files.next();
+        if (file.isTrashed()) continue;
+        fileCount++;
+        byId.set(file.getId(), file);
+        if (/\.(webm|m4a|mp4|aac|wav|ogg|mp3)$/i.test(file.getName())) audioFileCount++;
+        if (file.getName().endsWith('_meta.json')) metadataFiles.push(file);
+      }
+      const words = new Set();
+      const writtenWords = new Set();
+      const recordings = new Set();
+      let phrasesAndSentences = 0;
+      let reviewQueueCount = 0;
+      let needsHelpCount = 0;
+      for (const file of metadataFiles) {
+        let meta;
+        try { meta = JSON.parse(file.getBlob().getDataAsString()); } catch (_) { continue; }
+        if (!meta || typeof meta.recordingId !== 'string' || typeof meta.lessonId !== 'string' ||
+            /^(sync-test-|test-)/.test(meta.recordingId) || /^(sync-test-|test-)/.test(meta.lessonId) ||
+            !byId.has(meta.audioFileId) || recordings.has(meta.recordingId)) continue;
+        const audio = byId.get(meta.audioFileId);
+        const expectedBase = meta.lessonId + '_' + meta.recordingId;
+        if (audio.getSize() === 0 || !audio.getName().startsWith(expectedBase + '.') ||
+            file.getName() !== expectedBase + '_meta.json') continue;
+        recordings.add(meta.recordingId);
+        const english = String(meta.englishWord || '').trim().toLowerCase();
+        const spelling = String(meta.edoSpelling || '').trim();
+        const category = ['word', 'phrase', 'sentence'].indexOf(meta.category) !== -1
+          ? meta.category : (english.split(/\s+/).length <= 2 ? 'word' : 'phrase');
+        if (category === 'word' && english) {
+          words.add(english);
+          if (spelling) writtenWords.add(english);
+        } else if (english) phrasesAndSentences++;
+        if (!spelling) needsHelpCount++;
+        else if (!meta.verification || meta.verification.isVerified !== true) reviewQueueCount++;
+      }
+      return createJsonResponse({
+        status: 'success', action: action, checkedAt: new Date().toISOString(),
+        stats: { fileCount: fileCount, audioFileCount: audioFileCount,
+          metadataFileCount: metadataFiles.length, wordsCollected: words.size,
+          voiceRecordings: recordings.size, writtenWords: writtenWords.size,
+          phrasesAndSentences: phrasesAndSentences, totalContributions: recordings.size,
+          reviewQueueCount: reviewQueueCount, needsHelpCount: needsHelpCount }
+      });
+    }
+
     // ACTION B: Upload Recording (Person A)
     if (action === 'upload_recording') {
       // Role Check: Speakers, Admins, and Community Contributors are authorized to upload voice
@@ -337,6 +390,7 @@ function doPost(e) {
         recordingId: recordingId,
         lessonId: lessonId,
         englishWord: english,
+        category: ['word', 'phrase', 'sentence'].indexOf(payload.category) !== -1 ? payload.category : (english.trim().split(/\s+/).length <= 2 ? 'word' : 'phrase'),
         edoSpelling: edoText,
         status: recordingStatus,
         audioFileId: audioFile.getId(),

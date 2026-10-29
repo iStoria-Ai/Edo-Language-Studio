@@ -39,6 +39,7 @@ function loadCloudService(mockFetch, mockLocalStorage = new Map()) {
     atob,
     btoa,
     fetch: mockFetch,
+    AbortSignal,
     localStorage: {
       getItem: (key) => mockLocalStorage.get(key) ?? null,
       setItem: (key, val) => mockLocalStorage.set(key, String(val)),
@@ -534,6 +535,19 @@ function generateSampleWav() {
     assert.equal(synced, true);
     assert.equal(service.getPersistentUploadQueue().length, 0);
     assert.equal(entry.audioDataUrl, sampleAudio, 'Original audio must be retained');
+  }
+
+  {
+    const expected = { fileCount: 0, audioFileCount: 0, metadataFileCount: 0, wordsCollected: 0, voiceRecordings: 0, writtenWords: 0, phrasesAndSentences: 0, totalContributions: 0, reviewQueueCount: 0, needsHelpCount: 0 };
+    const service = loadCloudService(async (url, options) => {
+      assert.equal(JSON.parse(options.body).action, 'get_collection_stats');
+      assert.equal(options.cache, 'no-store');
+      return { ok: true, json: async () => ({ status: 'success', stats: expected, checkedAt: '2026-10-29T00:00:00Z' }) };
+    });
+    const result = await service.fetchDriveCollectionStats();
+    assert.equal(result.stats.totalContributions, 0, 'Cloud zero must not fall back to device totals');
+    const broken = loadCloudService(async () => ({ ok: true, json: async () => ({ status: 'success', stats: { ...expected, voiceRecordings: -1 } }) }));
+    await assert.rejects(broken.fetchDriveCollectionStats(), /valid collection totals/);
   }
 
   // Explicit deployment gate: failures must propagate rather than pass as offline skips.

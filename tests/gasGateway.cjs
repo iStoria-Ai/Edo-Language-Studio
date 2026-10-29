@@ -49,6 +49,7 @@ function createMockDrive() {
       parentFolderId: parentFolderId || TARGET_FOLDER_ID,
       trashed: false,
       getId: () => fileId,
+      isTrashed: () => file.trashed,
       getName: () => file.name,
       getSize: () => file.blob.getBytes().length,
       getBlob: () => file.blob,
@@ -328,6 +329,31 @@ function runTests() {
   }).getContent());
   assert.equal(conflictRes.code, 'SPELLING_ALREADY_SUBMITTED');
   console.log('✓ Second spelling submission safely rejected with SPELLING_ALREADY_SUBMITTED.');
+
+  // Live collection totals must fall when files are deleted outside the app.
+  const readStats = () => JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'get_collection_stats' }) } }).getContent());
+  const beforeDelete = readStats();
+  assert.equal(beforeDelete.status, 'success');
+  assert.equal(beforeDelete.stats.voiceRecordings, 2);
+  assert.equal(beforeDelete.stats.wordsCollected, 2);
+  const audioFile = driveApp.getFileById(uploadRes.audioFileId);
+  audioFile.setTrashed(true);
+  const afterDelete = readStats();
+  assert.equal(afterDelete.stats.voiceRecordings, 1, 'An orphaned metadata file must not count as a recording');
+  assert.equal(afterDelete.stats.wordsCollected, 1);
+  assert.equal(afterDelete.stats.fileCount, beforeDelete.stats.fileCount - 1);
+  driveApp.getFileById(needsSpellingRes.metadataFileId).setTrashed(true);
+  assert.equal(readStats().stats.totalContributions, 0, 'Missing metadata must not count');
+  for (const file of files.values()) file.setTrashed(true);
+  const emptyStats = readStats().stats;
+  for (const key of Object.keys(emptyStats)) assert.equal(emptyStats[key], 0, `An emptied Drive must reset ${key}`);
+  const folder = driveApp.getFolderById(TARGET_FOLDER_ID);
+  folder.createFile(makeBlob('report', 'application/json', 'live-token-free-sync.json'));
+  folder.createFile(makeBlob('{broken', 'application/json', 'broken_meta.json'));
+  const ignoredStats = readStats().stats;
+  assert.equal(ignoredStats.fileCount, 2, 'Report and corrupt files still count as files');
+  assert.equal(ignoredStats.totalContributions, 0, 'Report and corrupt files are not learning contributions');
+  console.log('✓ Live folder totals reflect audio/metadata deletion and an empty fresh start.');
 
   // 9. Community Rate Limit Protection
   console.log('--- Step 9: Testing Rate Limit Enforcement ---');
