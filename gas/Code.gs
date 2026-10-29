@@ -74,7 +74,7 @@ function getVerifiedContributor(providedToken, action) {
   }
 
   // If token is invalid or omitted, check if action permits community contributor access
-  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling', 'get_collection_stats', 'get_library', 'get_question_state', 'upsert_text_contribution', 'update_recording_permissions'];
+  const communityAllowedActions = ['upload_recording', 'ping', 'stream_audio', 'get_needs_spelling', 'submit_spelling', 'get_collection_stats', 'get_library', 'get_question_state', 'upsert_text_contribution', 'update_recording_permissions', 'record_playback'];
   if (communityAllowedActions.indexOf(action) !== -1) {
     // Enforce rate limiting for community uploads via CacheService
     if (['upload_recording', 'submit_spelling', 'upsert_text_contribution'].indexOf(action) !== -1) {
@@ -190,11 +190,28 @@ function sharedLibraryItems(folder) {
       syncStatus: 'synced_to_drive', status: hasAudio ? (spelling ? 'awaiting_review' : 'needs_writing') : 'needs_audio',
       reviewStatus: meta.reviewStatus || 'pending_approval',
       approvedBy: meta.approvedBy || undefined,
+      distinctListenersCount: Array.isArray(meta.distinctListeners) ? meta.distinctListeners.length : 0,
+      autoLocked: Boolean(meta.autoLocked),
       updatedAt: meta.updatedAt || meta.uploadedAt || '2026-01-01T00:00:00Z',
       createdAt: meta.uploadedAt || '2026-01-01T00:00:00Z',
       playbackPermission: permissions.playback === 'granted' ? 'granted' : 'denied',
       dialect: String(meta.voiceContributor && meta.voiceContributor.dialect || '') });
   }
+
+  // Prune deleted/trashed files from completed question ledger so curriculum items can return to Teach Edo
+  const completed = completedQuestions();
+  let changed = false;
+  for (const qId of Object.keys(completed)) {
+    const recId = completed[qId];
+    if (!seen.has(recId)) {
+      delete completed[qId];
+      changed = true;
+    }
+  }
+  if (changed) {
+    PropertiesService.getScriptProperties().setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
+  }
+
   return items;
 }
 
@@ -309,10 +326,19 @@ function doPost(e) {
 
     if (action === 'get_library' || action === 'get_question_state') {
       const props = PropertiesService.getScriptProperties();
-      const items = action === 'get_library' || !props.getProperty('COMPLETION_LEDGER_INITIALIZED_V1') ? sharedLibraryItems(folder) : [];
-      props.setProperty('COMPLETION_LEDGER_INITIALIZED_V1', 'true');
-      return createJsonResponse({ status: 'success', action: action, checkedAt: new Date().toISOString(),
-        items: action === 'get_library' ? items : undefined, answeredQuestionIds: Object.keys(completedQuestions()) });
+      const items = sharedLibraryItems(folder);
+      let tombstones = {};
+      try {
+        tombstones = JSON.parse(props.getProperty('DELETED_RECORDS_V1') || '{}') || {};
+      } catch (_) {}
+      return createJsonResponse({
+        status: 'success',
+        action: action,
+        checkedAt: new Date().toISOString(),
+        items: action === 'get_library' ? items : undefined,
+        tombstones: Object.keys(tombstones),
+        answeredQuestionIds: Object.keys(completedQuestions())
+      });
     }
     if (action === 'update_recording_permissions') {
       let file;
@@ -918,6 +944,146 @@ function doPost(e) {
         action: 'admin_unlock_entry',
         metadataFileId: metadataFileId,
         reviewStatus: 'pending_approval'
+      });
+    }
+
+    // ACTION H: Record Playback Event & Auto-Lock at 5 Distinct Listeners
+    if (action === 'record_playback') {
+      const metadataFileId = String(payload.metadataFileId || '').trim();
+      const listenerToken = String(payload.listenerToken || payload.listenerId || '').trim();
+      if (!metadataFileId) {
+        return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Missing metadataFileId.' });
+      }
+      let metaFile;
+      try {
+        metaFile = DriveApp.getFileById(metadataFileId);
+      } catch (_) {
+        return createJsonResponse({ status: 'error', code: 'NOT_FOUND', message: 'Metadata record not found.' });
+      }
+      if (!isFileInStudioFolder(metaFile) || !metaFile.getName().endsWith('_meta.json')) {
+        return createJsonResponse({ status: 'error', code: 'ACCESS_DENIED', message: 'Record is outside studio collection.' });
+      }
+      let meta;
+      try {
+        meta = JSON.parse(metaFile.getBlob().getDataAsString());
+      } catch (_) {
+        return createJsonResponse({ status: 'error', code: 'METADATA_UNREADABLE', message: 'Metadata is unreadable.' });
+      }
+
+      meta.playCount = Number(meta.playCount || 0) + 1;
+      meta.distinctListeners = Array.isArray(meta.distinctListeners) ? meta.distinctListeners : [];
+
+      if (listenerToken && /^[a-zA-Z0-9_-]{8,128}$/.test(listenerToken)) {
+        // Compute SHA-256 digest of listener token for privacy-safe deduplication
+        const hashedListener = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, listenerToken, Utilities.Charset.UTF_8)
+          .map(function(byte) { return ('0' + ((byte + 256) % 256).toString(16)).slice(-2); })
+          .join('');
+
+        if (meta.distinctListeners.indexOf(hashedListener) === -1) {
+          meta.distinctListeners.push(hashedListener);
+        }
+      }
+
+      // Automatically lock when 5 distinct verified listeners have played the recording
+      if (meta.distinctListeners.length >= 5 && meta.reviewStatus !== 'approved_locked') {
+        meta.reviewStatus = 'approved_locked';
+        meta.autoLocked = true;
+        meta.lockedReason = 'auto_verified_listens';
+        meta.approvedBy = {
+          id: 'system_auto_lock',
+          name: 'Auto-Verified (5 Listeners)',
+          approvedAt: new Date().toISOString()
+        };
+      }
+
+      meta.updatedAt = new Date().toISOString();
+      metaFile.setContent(JSON.stringify(meta, null, 2));
+
+      return createJsonResponse({
+        status: 'success',
+        action: 'record_playback',
+        metadataFileId: metadataFileId,
+        playCount: meta.playCount,
+        distinctListenersCount: meta.distinctListeners.length,
+        reviewStatus: meta.reviewStatus,
+        autoLocked: Boolean(meta.autoLocked)
+      });
+    }
+
+    // ACTION I: Admin Permanent Deletion (Authoritative Cloud Deletion & Tombstone)
+    if (action === 'admin_delete_entry') {
+      if (verifiedContributor.role !== 'admin') {
+        return createJsonResponse({
+          status: 'error',
+          code: 'UNAUTHORIZED_ADMIN',
+          message: 'Admin authorization required to delete contributions.'
+        });
+      }
+      const metadataFileId = String(payload.metadataFileId || '').trim();
+      if (!metadataFileId) {
+        return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Missing metadataFileId.' });
+      }
+      let metaFile;
+      try {
+        metaFile = DriveApp.getFileById(metadataFileId);
+      } catch (err) {
+        return createJsonResponse({ status: 'error', code: 'NOT_FOUND', message: 'Metadata record not found.' });
+      }
+      if (!isFileInStudioFolder(metaFile) || !metaFile.getName().endsWith('_meta.json')) {
+        return createJsonResponse({ status: 'error', code: 'ACCESS_DENIED', message: 'Record is outside studio collection.' });
+      }
+      let meta;
+      try {
+        meta = JSON.parse(metaFile.getBlob().getDataAsString());
+      } catch (e) {
+        return createJsonResponse({ status: 'error', code: 'METADATA_UNREADABLE', message: 'Metadata file is unreadable.' });
+      }
+
+      const lessonId = meta.lessonId;
+      const recordingId = meta.recordingId;
+      const audioFileId = meta.audioFileId;
+
+      // Trash audio file if present
+      if (audioFileId) {
+        try {
+          const audioFile = DriveApp.getFileById(audioFileId);
+          if (isFileInStudioFolder(audioFile)) {
+            audioFile.setTrashed(true);
+          }
+        } catch (_) {}
+      }
+
+      // Trash metadata file
+      metaFile.setTrashed(true);
+
+      // Record tombstone in Script Properties so clients purge this entry
+      const props = PropertiesService.getScriptProperties();
+      let tombstones = {};
+      try {
+        tombstones = JSON.parse(props.getProperty('DELETED_RECORDS_V1') || '{}') || {};
+      } catch (_) {}
+      tombstones[recordingId] = {
+        lessonId: lessonId,
+        deletedAt: new Date().toISOString()
+      };
+      props.setProperty('DELETED_RECORDS_V1', JSON.stringify(tombstones));
+
+      // Remove from COMPLETED_QUESTIONS_V1 so curriculum prompts return to Teach Edo
+      try {
+        const completed = completedQuestions();
+        if (lessonId && completed[lessonId]) {
+          delete completed[lessonId];
+          props.setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
+        }
+      } catch (_) {}
+
+      return createJsonResponse({
+        status: 'success',
+        action: 'admin_delete_entry',
+        recordingId: recordingId,
+        lessonId: lessonId,
+        tombstoneRecorded: true,
+        message: 'Entry permanently removed and tombstone registered.'
       });
     }
 

@@ -1,13 +1,18 @@
 import { EdoEntry } from '../types/edo';
 import { recordingOwnerKey } from './recordingOwnership';
 import { digest } from './libraryProtection';
-import { getGatewayUrl, getStoredContributorToken, streamAudioFromGateway, submitSpellingToGateway } from './cloudSyncService';
+import { getGatewayUrl, getStoredContributorToken, streamAudioFromGateway, submitSpellingToGateway, recordPlaybackToGateway } from './cloudSyncService';
 import { readLibrarySnapshot, writeLibrarySnapshot } from './localLibraryStore';
 
 const CACHE_KEY = 'edo_community_library_v1';
 const DRAFT_KEY = 'edo_community_spelling_drafts_v1';
 interface SpellingDraft { metadataFileId: string; text: string; error?: string }
-export interface CommunitySnapshot { entries: EdoEntry[]; answeredQuestionIds: string[]; checkedAt: string }
+export interface CommunitySnapshot {
+  entries: EdoEntry[];
+  answeredQuestionIds: string[];
+  checkedAt: string;
+  tombstones?: string[];
+}
 export async function communityRequest(payload: Record<string, unknown>) {
   const response = await fetch(getGatewayUrl(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({ ...payload, authToken: getStoredContributorToken() }), redirect: 'follow', mode: 'cors', cache: 'no-store', signal: AbortSignal.timeout(30000) });
@@ -30,7 +35,13 @@ export async function fetchCommunityLibrary(): Promise<CommunitySnapshot> {
     typeof entry.cloudMetadataFileId === 'string' && typeof entry.english === 'string' &&
     ['word', 'phrase', 'sentence'].includes(entry.category) && typeof entry.hasAudio === 'boolean' &&
     (!entry.hasAudio || typeof entry.cloudAudioFileId === 'string') && !entry.audioDataUrl)) throw new Error('The gateway returned an invalid shared Library. Cached content is preserved.');
-  const snapshot = { entries: data.items as EdoEntry[], answeredQuestionIds: data.answeredQuestionIds as string[], checkedAt: String(data.checkedAt) };
+  const tombstones = Array.isArray(data.tombstones) ? data.tombstones.filter((t: unknown) => typeof t === 'string') : [];
+  const snapshot: CommunitySnapshot = {
+    entries: data.items as EdoEntry[],
+    answeredQuestionIds: data.answeredQuestionIds as string[],
+    checkedAt: String(data.checkedAt),
+    tombstones
+  };
   await writeLibrarySnapshot(CACHE_KEY, JSON.stringify(snapshot));
   return snapshot;
 }
@@ -39,22 +50,59 @@ export async function fetchAnsweredQuestions(): Promise<string[]> {
   if (!Array.isArray(data.answeredQuestionIds) || !data.answeredQuestionIds.every((id: unknown) => typeof id === 'string')) throw new Error('Shared question list is unavailable.');
   return data.answeredQuestionIds;
 }
-export function mergeCommunityEntries(local: EdoEntry[], remote: EdoEntry[], drafts: SpellingDraft[] = []): EdoEntry[] {
-  const remaining = new Map(remote.map(entry => [entry.recordingId, entry]));
-  const merged = local.filter(entry => !entry.isSampleData || !remote.some(shared => shared.sourceLessonId === entry.id)).map(entry => {
-    const shared = remote.find(item => Boolean(entry.recordingId && item.recordingId === entry.recordingId) || Boolean(entry.cloudMetadataFileId && item.cloudMetadataFileId === entry.cloudMetadataFileId) || Boolean(entry.cloudAudioFileId && item.cloudAudioFileId === entry.cloudAudioFileId));
-    if (!shared) return { ...entry };
-    remaining.delete(shared.recordingId);
-    // Merge for display only. Never write remote metadata over the original protected library.
-    return { ...entry, cloudAudioFileId: shared.cloudAudioFileId, cloudMetadataFileId: shared.cloudMetadataFileId,
-      sourceLessonId: shared.sourceLessonId, syncStatus: 'synced_to_drive' as const, playbackPermission: shared.playbackPermission,
-      edoText: shared.edoText || entry.edoText, status: shared.edoText ? 'awaiting_review' as const : entry.status,
-      reviewStatus: shared.reviewStatus || entry.reviewStatus,
-      approvedBy: shared.approvedBy || entry.approvedBy };
-  });
+export function mergeCommunityEntries(
+  local: EdoEntry[],
+  remote: EdoEntry[],
+  drafts: SpellingDraft[] = [],
+  tombstones: string[] = []
+): EdoEntry[] {
+  const tombSet = new Set(tombstones);
+  const activeRemote = remote.filter(
+    entry => !tombSet.has(entry.recordingId || '') && !tombSet.has(entry.cloudMetadataFileId || '')
+  );
+  const remaining = new Map(activeRemote.map(entry => [entry.recordingId, entry]));
+  const merged = local
+    .filter(entry => {
+      if (entry.recordingId && tombSet.has(entry.recordingId)) return false;
+      if (entry.cloudMetadataFileId && tombSet.has(entry.cloudMetadataFileId)) return false;
+      if (!entry.isSampleData || !activeRemote.some(shared => shared.sourceLessonId === entry.id)) return true;
+      return false;
+    })
+    .map(entry => {
+      const shared = activeRemote.find(
+        item =>
+          Boolean(entry.recordingId && item.recordingId === entry.recordingId) ||
+          Boolean(entry.cloudMetadataFileId && item.cloudMetadataFileId === entry.cloudMetadataFileId) ||
+          Boolean(entry.cloudAudioFileId && item.cloudAudioFileId === entry.cloudAudioFileId)
+      );
+      if (!shared) return { ...entry };
+      remaining.delete(shared.recordingId);
+      // Merge for display only. Never write remote metadata over the original protected library.
+      return {
+        ...entry,
+        cloudAudioFileId: shared.cloudAudioFileId,
+        cloudMetadataFileId: shared.cloudMetadataFileId,
+        sourceLessonId: shared.sourceLessonId,
+        syncStatus: 'synced_to_drive' as const,
+        playbackPermission: shared.playbackPermission,
+        edoText: shared.edoText || entry.edoText,
+        status: shared.edoText ? ('awaiting_review' as const) : entry.status,
+        reviewStatus: shared.reviewStatus || entry.reviewStatus,
+        approvedBy: shared.approvedBy || entry.approvedBy,
+        distinctListenersCount: shared.distinctListenersCount ?? entry.distinctListenersCount,
+        autoLocked: shared.autoLocked ?? entry.autoLocked
+      };
+    });
   return [...merged, ...remaining.values()].map(entry => {
     const draft = drafts.find(item => item.metadataFileId === entry.cloudMetadataFileId);
-    return draft ? { ...entry, edoText: draft.text, spellingSyncStatus: draft.error ? 'conflict' as const : 'pending' as const, spellingSyncError: draft.error } : entry;
+    return draft
+      ? {
+          ...entry,
+          edoText: draft.text,
+          spellingSyncStatus: draft.error ? ('conflict' as const) : ('pending' as const),
+          spellingSyncError: draft.error
+        }
+      : entry;
   });
 }
 export async function readSpellingDrafts(): Promise<SpellingDraft[]> {
@@ -104,6 +152,9 @@ export async function getCommunityAudio(entry: EdoEntry): Promise<string> {
   const result = await streamAudioFromGateway(entry.cloudAudioFileId);
   if (!result.ok || !result.audioDataUrl) throw new Error(result.error || 'Unable to play shared recording.');
   await writeLibrarySnapshot(key, result.audioDataUrl);
+  if (entry.cloudMetadataFileId) {
+    void recordPlaybackToGateway(entry.cloudMetadataFileId).catch(() => {});
+  }
   return result.audioDataUrl;
 }
 export function nextUnansweredQuestion(questions: EdoEntry[], answeredIds: ReadonlySet<string>, start = 0): number {

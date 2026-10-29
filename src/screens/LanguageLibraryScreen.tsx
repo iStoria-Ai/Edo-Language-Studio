@@ -7,6 +7,7 @@ import {
   Square,
   Mic,
   Lock,
+  Pencil,
   CheckCircle,
   ChevronDown,
   ChevronUp
@@ -16,7 +17,7 @@ import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
 import { playAudioRecording, stopActivePlayback, MicrophoneRecorder } from '../services/audioService';
 import { getCommunityAudio } from '../services/communityLibrary';
-import { adminLockEntry, adminUnlockEntry } from '../services/cloudSyncService';
+import { adminLockEntry, adminUnlockEntry, adminDeleteEntry, recordPlaybackToGateway } from '../services/cloudSyncService';
 
 export interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
@@ -80,7 +81,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalSuccess, setModalSuccess] = useState<string | null>(null);
 
-  // Admin lock and unlock expandable state
+  // Admin lock, unlock, and delete expandable state
   const [showAdminUnlock, setShowAdminUnlock] = useState(false);
   const [showAdminLock, setShowAdminLock] = useState(false);
   const [adminTokenInput, setAdminTokenInput] = useState('');
@@ -88,6 +89,8 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [adminUnlockError, setAdminUnlockError] = useState<string | null>(null);
   const [adminLockBusy, setAdminLockBusy] = useState(false);
   const [adminLockError, setAdminLockError] = useState<string | null>(null);
+  const [adminDeleteBusy, setAdminDeleteBusy] = useState(false);
+  const [adminDeleteError, setAdminDeleteError] = useState<string | null>(null);
 
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -122,6 +125,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     setAdminTokenInput('');
     setAdminUnlockError(null);
     setAdminLockError(null);
+    setAdminDeleteError(null);
   };
 
   const handleCloseModal = () => {
@@ -161,8 +165,19 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       return;
     }
 
+    const trackPlayback = () => {
+      if (entry.cloudMetadataFileId) {
+        void recordPlaybackToGateway(entry.cloudMetadataFileId).then(res => {
+          if (res.ok && (res.autoLocked || res.reviewStatus === 'approved_locked')) {
+            void onLibraryChanged?.();
+          }
+        }).catch(() => {});
+      }
+    };
+
     if (entry.audioDataUrl || entry.isSampleData) {
       setPlayingId(entry.id);
+      trackPlayback();
       playAudioRecording(
         entry.audioDataUrl,
         entry.audioDurationSec || 3,
@@ -186,6 +201,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           setPlayingId(null);
           return;
         }
+        trackPlayback();
         playAudioRecording(
           audioUrl,
           entry.audioDurationSec || 3,
@@ -376,6 +392,36 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     }
   };
 
+  // Admin delete submission (Permanently remove from Google Drive)
+  const handleAdminDelete = async () => {
+    if (!selectedEntry || !selectedEntry.cloudMetadataFileId) return;
+    const token = adminTokenInput.trim();
+    if (!token) {
+      setAdminDeleteError('Please enter your administrator credential.');
+      return;
+    }
+    const confirmed = typeof window !== 'undefined'
+      ? window.confirm(`Permanently delete "${selectedEntry.english}" from Google Drive? This action cannot be undone.`)
+      : true;
+    if (!confirmed) return;
+
+    setAdminDeleteBusy(true);
+    setAdminDeleteError(null);
+    try {
+      const res = await adminDeleteEntry(selectedEntry.cloudMetadataFileId, token);
+      if (res.ok) {
+        if (onLibraryChanged) await onLibraryChanged();
+        handleCloseModal();
+      } else {
+        setAdminDeleteError(res.message || 'Deletion failed. Invalid admin token.');
+      }
+    } catch (err: any) {
+      setAdminDeleteError(String(err?.message || err));
+    } finally {
+      setAdminDeleteBusy(false);
+    }
+  };
+
   return (
     <div className="edo-screen relative">
       {/* Studio Header (Yellow Section) */}
@@ -451,8 +497,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           return (
             <div
               key={entry.id}
-              onClick={() => handleOpenEntry(entry)}
-              className="w-full rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs cursor-pointer transition"
+              className="w-full rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition"
             >
               <div className="flex flex-1 items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-xl bg-[#FAF6EC] flex items-center justify-center shrink-0">
@@ -465,12 +510,12 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
 
                 <div className="min-w-0 flex-1">
                   {/* Line 1: English (Full text visible, wraps cleanly) */}
-                  <p className="text-[14.5px] leading-snug font-semibold text-[#1A241D] break-words whitespace-normal">
+                  <p className="text-[14.5px] leading-snug font-semibold text-[#1A241D] break-words whitespace-normal select-text">
                     <span className="text-[#68766E] font-medium text-[13px]">English:</span> {entry.english}
                   </p>
 
                   {/* Line 2: Edo (Full spelling visible, with small status dot or lock) */}
-                  <p className="text-[14px] leading-snug text-[#157A4C] break-words whitespace-normal mt-0.5 flex items-center gap-1.5 flex-wrap">
+                  <p className="text-[14px] leading-snug text-[#157A4C] break-words whitespace-normal mt-0.5 flex items-center gap-1.5 flex-wrap select-text">
                     <span className="text-[#68766E] font-medium text-[13px]">Edo:</span>
                     <span className="font-bold text-[#1F2922]">{entry.edoText}</span>
                     {isLocked ? (
@@ -484,8 +529,9 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 </div>
               </div>
 
-              {/* Right Speaker Button — Strictly plays recorded Edo human voice */}
-              <div className="shrink-0">
+              {/* Action Buttons: Speaker (Listen) and Pencil (Edit) */}
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Speaker Button — Strictly plays recorded Edo human voice */}
                 <button
                   type="button"
                   onClick={(e) => handlePlayWordAudio(e, entry)}
@@ -498,6 +544,35 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 >
                   <Volume2 className="w-4 h-4 stroke-[2.3]" />
                 </button>
+
+                {/* Edit Button (Pencil) — ONLY this opens the editing window */}
+                {!isLocked ? (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenEntry(entry);
+                    }}
+                    aria-label={`Edit ${entry.english}`}
+                    title="Edit lesson"
+                    className="w-8 h-8 rounded-full bg-[#F4EFE2] hover:bg-[#EAE0CE] text-[#556058] hover:text-[#18241B] flex items-center justify-center transition shrink-0"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenEntry(entry);
+                    }}
+                    aria-label={`Protected lesson: ${entry.english}`}
+                    title="Protected lesson (Administrator options)"
+                    className="w-8 h-8 rounded-full bg-[#EBF7EE] text-[#157A4C] flex items-center justify-center transition shrink-0 opacity-80 hover:opacity-100"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           );
@@ -595,18 +670,29 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                         type="password"
                         value={adminTokenInput}
                         onChange={(e) => setAdminTokenInput(e.target.value)}
-                        placeholder="Enter admin token to unlock"
+                        placeholder="Enter admin token"
                         className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
                       />
                       {adminUnlockError && <p className="text-xs text-red-600 font-semibold">{adminUnlockError}</p>}
-                      <button
-                        type="button"
-                        disabled={adminUnlockBusy}
-                        onClick={handleAdminUnlock}
-                        className="w-full py-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
-                      >
-                        {adminUnlockBusy ? 'Unlocking…' : 'Unlock Lesson'}
-                      </button>
+                      {adminDeleteError && <p className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          type="button"
+                          disabled={adminUnlockBusy || adminDeleteBusy}
+                          onClick={handleAdminUnlock}
+                          className="flex-1 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-xs disabled:opacity-50"
+                        >
+                          {adminUnlockBusy ? 'Unlocking…' : 'Unlock Lesson'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={adminUnlockBusy || adminDeleteBusy}
+                          onClick={handleAdminDelete}
+                          className="flex-1 py-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
+                        >
+                          {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -734,18 +820,29 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                           type="password"
                           value={adminTokenInput}
                           onChange={(e) => setAdminTokenInput(e.target.value)}
-                          placeholder="Enter admin token to approve and lock"
+                          placeholder="Enter admin token"
                           className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
                         />
                         {adminLockError && <p className="text-xs text-red-600 font-semibold">{adminLockError}</p>}
-                        <button
-                          type="button"
-                          disabled={adminLockBusy}
-                          onClick={handleAdminLock}
-                          className="w-full py-2 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs disabled:opacity-50"
-                        >
-                          {adminLockBusy ? 'Approving…' : 'Approve & Lock Lesson'}
-                        </button>
+                        {adminDeleteError && <p className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={adminLockBusy || adminDeleteBusy}
+                            onClick={handleAdminLock}
+                            className="flex-1 py-2 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs disabled:opacity-50"
+                          >
+                            {adminLockBusy ? 'Approving…' : 'Approve & Lock'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={adminLockBusy || adminDeleteBusy}
+                            onClick={handleAdminDelete}
+                            className="flex-1 py-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
+                          >
+                            {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>

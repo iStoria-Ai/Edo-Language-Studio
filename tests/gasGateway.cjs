@@ -375,7 +375,7 @@ function runTests() {
   for (const file of files.values()) file.setTrashed(true);
   const ledgerAfterDelete = libraryRequest();
   assert.equal(ledgerAfterDelete.items.length, 0);
-  assert(ledgerAfterDelete.answeredQuestionIds.includes('word-water'), 'Deleting audio must not reopen an answered question');
+  assert(!ledgerAfterDelete.answeredQuestionIds.includes('word-water'), 'Deleting audio must reopen curriculum question for new recording in Teach Edo');
   const emptyStats = readStats().stats;
   for (const key of Object.keys(emptyStats)) assert.equal(emptyStats[key], 0, `An emptied Drive must reset ${key}`);
   const folder = driveApp.getFolderById(TARGET_FOLDER_ID);
@@ -490,6 +490,105 @@ function runTests() {
   assert.equal(adminUnlock.status, 'success');
   assert.equal(adminUnlock.reviewStatus, 'pending_approval');
   console.log('✓ Admin successfully unlocked entry.');
+
+  // 12. Auto-Lock After 5 Distinct Verified Listens & Anonymous Deduplication
+  console.log('--- Step 12: Testing 5-Listener Auto-Lock & Listener Deduplication ---');
+  const autoLockUpload = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'word-autolock-01',
+      recordingId: 'rec-autolock-01',
+      english: 'Auto Lock Test',
+      edoSpelling: 'Ebe',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav'
+    }) }
+  }).getContent());
+  assert.equal(autoLockUpload.status, 'success');
+  const autoLockMetaId = autoLockUpload.metadataFileId;
+
+  // Listener 1 plays twice
+  const play1 = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'record_playback',
+      metadataFileId: autoLockMetaId,
+      listenerToken: 'listener-token-uuid-1111'
+    }) }
+  }).getContent());
+  assert.equal(play1.status, 'success');
+  assert.equal(play1.playCount, 1);
+  assert.equal(play1.distinctListenersCount, 1);
+  assert.equal(play1.autoLocked, false);
+
+  const play1Repeat = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'record_playback',
+      metadataFileId: autoLockMetaId,
+      listenerToken: 'listener-token-uuid-1111'
+    }) }
+  }).getContent());
+  assert.equal(play1Repeat.playCount, 2);
+  assert.equal(play1Repeat.distinctListenersCount, 1, 'Duplicate listens from same token must not increment distinct count');
+  assert.equal(play1Repeat.autoLocked, false);
+
+  // Listeners 2, 3, 4 play
+  for (let i = 2; i <= 4; i++) {
+    const playN = JSON.parse(sandbox.doPost({
+      postData: { contents: JSON.stringify({
+        action: 'record_playback',
+        metadataFileId: autoLockMetaId,
+        listenerToken: `listener-token-uuid-${i}${i}${i}${i}`
+      }) }
+    }).getContent());
+    assert.equal(playN.distinctListenersCount, i);
+    assert.equal(playN.autoLocked, false);
+  }
+
+  // Listener 5 plays -> triggers automatic lock!
+  const play5 = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'record_playback',
+      metadataFileId: autoLockMetaId,
+      listenerToken: 'listener-token-uuid-5555'
+    }) }
+  }).getContent());
+  assert.equal(play5.distinctListenersCount, 5);
+  assert.equal(play5.autoLocked, true, 'Reaching 5 verified distinct listeners must auto-lock');
+  assert.equal(play5.reviewStatus, 'approved_locked');
+  console.log('✓ 5 distinct listeners verified: entry automatically locked to approved_locked.');
+
+  // 13. Admin Authoritative Deletion, Tombstone Broadcasting & Curriculum Reopening
+  console.log('--- Step 13: Testing Admin Authoritative Deletion & Tombstones ---');
+  // Unauthorized deletion attempt with non-admin speaker token
+  const unauthDel = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_delete_entry',
+      authToken: speakerToken,
+      metadataFileId: autoLockMetaId
+    }) }
+  }).getContent());
+  assert.equal(unauthDel.code, 'UNAUTHORIZED_ADMIN');
+
+  // Authorized admin deletion
+  const authDel = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_delete_entry',
+      authToken: adminToken,
+      metadataFileId: autoLockMetaId
+    }) }
+  }).getContent());
+  assert.equal(authDel.status, 'success');
+  assert.equal(authDel.tombstoneRecorded, true);
+
+  // Library request confirms deletion and tombstone presence
+  const libAfterDel = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({ action: 'get_library' }) }
+  }).getContent());
+  assert(!libAfterDel.items.some(it => it.recordingId === 'rec-autolock-01'), 'Deleted item must be removed from cloud library');
+  assert(libAfterDel.tombstones.includes('rec-autolock-01'), 'Tombstone must be broadcast to client devices');
+  assert(!libAfterDel.answeredQuestionIds.includes('word-autolock-01'), 'Curriculum question must reopen for Teach Edo');
+  console.log('✓ Admin authoritative deletion, tombstones, and prompt reopening verified.');
 
   // Test doGet health check (tokens are never accepted in GET URLs)
   const healthGet = JSON.parse(sandbox.doGet({}).getContent());

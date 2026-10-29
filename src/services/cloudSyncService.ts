@@ -662,6 +662,113 @@ export async function adminUnlockEntry(
   }
 }
 
+const LISTENER_TOKEN_STORAGE_KEY = 'edo_anonymous_listener_id_v1';
+
+/**
+ * Returns a stable, anonymous listener identifier for this browser instance.
+ * Stored locally to prevent duplicate listener counts without tracking personal information.
+ *
+ * Anonymous Browser Limitation:
+ * Without user accounts, separate browser profiles or cleared storage will generate
+ * new tokens. This provides reasonable duplicate prevention without personal data.
+ */
+export function getAnonymousListenerToken(): string {
+  try {
+    if (typeof localStorage === 'undefined') return 'anon-default';
+    let token = localStorage.getItem(LISTENER_TOKEN_STORAGE_KEY);
+    if (!token || !/^[a-zA-Z0-9_-]{8,128}$/.test(token)) {
+      token = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : 'ls-' + Math.random().toString(36).substring(2) + Date.now().toString(36);
+      localStorage.setItem(LISTENER_TOKEN_STORAGE_KEY, token);
+    }
+    return token;
+  } catch {
+    return 'anon-default';
+  }
+}
+
+/**
+ * Records a successful playback event on the Google Apps Script gateway.
+ * Deduplicates distinct listeners via SHA-256 token hashing.
+ * When 5 distinct listeners are verified, the backend automatically locks the entry.
+ */
+export async function recordPlaybackToGateway(
+  metadataFileId: string,
+  listenerToken = getAnonymousListenerToken(),
+  url = getGatewayUrl()
+): Promise<{ ok: boolean; playCount?: number; distinctListenersCount?: number; reviewStatus?: string; autoLocked?: boolean; message?: string }> {
+  try {
+    const payload = {
+      action: 'record_playback',
+      metadataFileId: metadataFileId.trim(),
+      listenerToken: listenerToken.trim()
+    };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      mode: 'cors'
+    });
+    if (!response.ok) {
+      return { ok: false, message: `Gateway HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    return {
+      ok: data.status === 'success',
+      playCount: data.playCount,
+      distinctListenersCount: data.distinctListenersCount,
+      reviewStatus: data.reviewStatus,
+      autoLocked: Boolean(data.autoLocked),
+      message: data.message
+    };
+  } catch (err: any) {
+    return { ok: false, message: String(err?.message || err) };
+  }
+}
+
+/**
+ * Permanently removes a contribution and its recording from Google Drive.
+ * Requires administrator role verification on the Google Apps Script gateway.
+ * Records a tombstone to purge cached instances across client devices and
+ * reopens curriculum questions for re-recording in Teach Edo.
+ */
+export async function adminDeleteEntry(
+  metadataFileId: string,
+  adminToken: string,
+  url = getGatewayUrl()
+): Promise<{ ok: boolean; status: string; recordingId?: string; lessonId?: string; tombstoneRecorded?: boolean; message: string }> {
+  try {
+    const payload = {
+      action: 'admin_delete_entry',
+      authToken: adminToken.trim(),
+      metadataFileId: metadataFileId.trim()
+    };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      mode: 'cors'
+    });
+    if (!response.ok) {
+      return { ok: false, status: 'error', message: `Gateway HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    return {
+      ok: data.status === 'success',
+      status: data.status,
+      recordingId: data.recordingId,
+      lessonId: data.lessonId,
+      tombstoneRecorded: Boolean(data.tombstoneRecorded),
+      message: data.message || (data.status === 'success' ? 'Entry permanently deleted from Google Drive.' : 'Deletion failed')
+    };
+  } catch (err: any) {
+    return { ok: false, status: 'error', message: String(err?.message || err) };
+  }
+}
+
 export interface QueuedUpload {
   lessonId: string;
   enqueuedAt: string;

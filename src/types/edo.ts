@@ -42,6 +42,8 @@ export interface EdoEntry {
   spellingSyncError?: string;
   reviewStatus?: 'pending_approval' | 'approved_locked';
   approvedBy?: { id: string; name: string; approvedAt: string };
+  distinctListenersCount?: number;
+  autoLocked?: boolean;
   dialect?: string;
   id: string;
   english: string;

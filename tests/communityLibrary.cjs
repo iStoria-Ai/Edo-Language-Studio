@@ -178,5 +178,15 @@ const shared = { id: 'cloud-rec-a', recordingId: 'rec-a', sourceLessonId: 'word-
   assert.equal(Boolean(directCompleteItem.hasAudio && (!directCompleteItem.edoText || !directCompleteItem.edoText.trim())), false, 'Directly completed item must never enter Help Others');
   assert.equal(Boolean(directCompleteItem.english && directCompleteItem.edoText && directCompleteItem.hasAudio), true, 'Directly completed item enters Library immediately');
 
-  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, and automatic section progression.');
+  // Test Tombstone Purging & Drive Authoritative Deletion
+  const localWithDeleted = [
+    { ...shared, id: 'word-water', isCommunity: false, syncStatus: 'synced_to_drive' },
+    { id: 'local-active', recordingId: 'rec-active', english: 'Active', category: 'word', hasAudio: true, edoText: 'Active Edo', status: 'awaiting_review', isSampleData: false, updatedAt: '2026-10-29T00:00:00Z' }
+  ];
+  const mergedWithTombstone = a.api.mergeCommunityEntries(localWithDeleted, [shared], [], ['rec-a']);
+  assert(!mergedWithTombstone.some(e => e.recordingId === 'rec-a'), 'Tombstone must purge deleted recording from merged library');
+  assert.equal(mergedWithTombstone.length, 1, 'Non-deleted items must be preserved');
+  assert.equal(mergedWithTombstone[0].id, 'local-active');
+
+  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, automatic section progression, and tombstone purging.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

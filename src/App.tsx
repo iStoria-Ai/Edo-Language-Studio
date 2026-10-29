@@ -14,6 +14,7 @@ import {
   streamAudioFromGateway,
   submitSpellingToGateway,
   enqueueForBackgroundUpload,
+  dequeueFromBackgroundUpload,
   processBackgroundUploadQueue
 } from './services/cloudSyncService';
 import {
@@ -70,7 +71,7 @@ export const App: React.FC = () => {
   const [communityBusy, setCommunityBusy] = useState(false);
   const [spellingDrafts, setSpellingDrafts] = useState<Awaited<ReturnType<typeof readSpellingDrafts>>>([]);
   const communityInFlight = useRef(false);
-  const sharedEntries = mergeCommunityEntries(entries, community?.entries || [], spellingDrafts);
+  const sharedEntries = mergeCommunityEntries(entries, community?.entries || [], spellingDrafts, community?.tombstones || []);
   async function refreshCommunity() {
     if (communityInFlight.current) return;
     communityInFlight.current = true;
@@ -81,6 +82,25 @@ export const App: React.FC = () => {
       setSpellingDrafts(await readSpellingDrafts());
       if (!navigator.onLine) { setCommunityError('Offline — showing previously cached community contributions. Pending work stays on this device.'); return; }
       let snapshot = await fetchCommunityLibrary();
+
+      // Process tombstones: purge deleted records from local device and sync queue
+      const tombstones = new Set(snapshot.tombstones || []);
+      if (tombstones.size > 0) {
+        for (const tomb of tombstones) {
+          dequeueFromBackgroundUpload(tomb);
+        }
+        const currentLocal = await loadLibrary();
+        const pruned = currentLocal.entries.filter(e => {
+          if (e.recordingId && tombstones.has(e.recordingId)) return false;
+          if (e.cloudMetadataFileId && tombstones.has(e.cloudMetadataFileId)) return false;
+          if (e.id && tombstones.has(e.id)) return false;
+          return true;
+        });
+        if (pruned.length !== currentLocal.entries.length) {
+          await saveEntries(pruned, currentLocal.entries);
+        }
+      }
+
       let changedOnline = false;
       let queuedAudio = false;
       const local = await loadLibrary();
