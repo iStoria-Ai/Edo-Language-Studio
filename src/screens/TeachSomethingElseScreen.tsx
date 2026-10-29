@@ -36,7 +36,6 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
 }) => {
   const [englishOrMainText, setEnglishOrMainText] = useState('');
   const [optionalEdoSpelling, setOptionalEdoSpelling] = useState('');
-  const [playbackAllowed, setPlaybackAllowed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const [audioDataUrl, setAudioDataUrl] = useState<string | undefined>(undefined);
@@ -138,7 +137,7 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
       edoText: trimmedEdo,
       audioDataUrl,
       audioDurationSec: audioDataUrl ? audioDuration : undefined,
-      playbackAllowed
+      playbackAllowed: true
     }); } catch (error) { setSavedNotice(String(error)); return; }
 
     const statusMsg =
@@ -257,7 +256,11 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
           )}
         </div>
 
-        {audioDataUrl && <label className="flex items-start gap-2 text-sm leading-snug"><input type="checkbox" checked={playbackAllowed} onChange={event => setPlaybackAllowed(event.target.checked)} />I am the speaker and permit other users to listen in the shared Library. This does not permit AI voice training.</label>}
+        {audioDataUrl && (
+          <p className="text-[11.5px] text-[#556058] text-center leading-relaxed mt-2.5 px-2">
+            By submitting your recording, you agree to share it for listening in the Edo Language Studio Library. Your voice will not be used for AI training.
+          </p>
+        )}
         {/* Bottom Microphone + Send Layout */}
         <div className="pt-3">
           <div className="text-center text-[14px] font-bold text-[#525E55] mb-2.5">

@@ -49,7 +49,6 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   const [playbackSec, setPlaybackSec] = useState(0);
 
   // Audio recording state (for "Needs Voice" mode)
-  const [playbackAllowed, setPlaybackAllowed] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordSec, setRecordSec] = useState(0);
   const [capturedAudioUrl, setCapturedAudioUrl] = useState<string | undefined>(undefined);
@@ -189,7 +188,7 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     if (!currentItem || !capturedAudioUrl) return;
     stopActivePlayback();
     setIsPlaying(false);
-    await onAttachAudioToEntry(currentItem.id, capturedAudioUrl, capturedDuration, playbackAllowed);
+    await onAttachAudioToEntry(currentItem.id, capturedAudioUrl, capturedDuration, true);
     setCapturedAudioUrl(undefined);
     showTransientMessage(`Thank you! Added Edo voice recording for "${currentItem.english}".`);
     setCurrentIndex(0);
@@ -424,8 +423,12 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
             </div>
 
             <div className="flex flex-col gap-2.5 pt-2">
-              <label className="flex items-start gap-2 text-sm leading-snug"><input type="checkbox" checked={playbackAllowed} onChange={event => setPlaybackAllowed(event.target.checked)} />I am the speaker and permit shared-library playback. AI voice training is not granted.</label>
-                  <button
+              {capturedAudioUrl && (
+                <p className="text-[11.5px] text-[#556058] text-center leading-relaxed px-1">
+                  By submitting your recording, you agree to share it for listening in the Edo Language Studio Library. Your voice will not be used for AI training.
+                </p>
+              )}
+              <button
                 type="button"
                 disabled={!capturedAudioUrl}
                 onClick={handleSaveRecordedAudioForWrittenEntry}

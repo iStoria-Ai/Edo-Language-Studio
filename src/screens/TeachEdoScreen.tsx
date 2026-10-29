@@ -62,7 +62,6 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   const [answeredIds, setAnsweredIds] = useState<Set<string> | null>(null);
   const [sharedError, setSharedError] = useState('');
   const [retryShared, setRetryShared] = useState(0);
-  const [playbackAllowed, setPlaybackAllowed] = useState(false);
   const questionCheckLock = useRef(false);
   const [isSaving, setIsSaving] = useState(false);
   const saveLock = useRef(false);
@@ -321,7 +320,7 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     saveLock.current = true;
     setIsSaving(true);
     try {
-      await onSaveVoiceContribution(currentQuestion.id, recordedAudioUrl, recordedDuration, writtenText.trim(), playbackAllowed);
+      await onSaveVoiceContribution(currentQuestion.id, recordedAudioUrl, recordedDuration, writtenText.trim(), true);
       setWritingError(null);
       setSavedModeNote(writtenText.trim() ? 'complete' : 'voice_only');
       updateStep('completed');
@@ -646,7 +645,10 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
                   <span>Record again</span>
                 </button>
 
-                <label className="flex items-start gap-2 text-sm leading-snug"><input type="checkbox" checked={playbackAllowed} onChange={event => setPlaybackAllowed(event.target.checked)} />I am the speaker and permit shared-library playback. This does not permit AI voice training.</label>
+                <p className="text-[11.5px] text-[#556058] text-center leading-relaxed px-2">
+                  By submitting your recording, you agree to share it for listening in the Edo Language Studio Library. Your voice will not be used for AI training.
+                </p>
+
                 {/* Save Voice / Save and Continue Button */}
                 <button
                   type="button"

@@ -848,7 +848,17 @@ function doPost(e) {
       }
 
       const audioBytes = audioFile.getBlob().getBytes();
-      const mimeType = audioFile.getBlob().getContentType() || 'audio/webm';
+      const rawContentType = audioFile.getBlob().getContentType();
+      let mimeType = metaContent.audioMimeType || rawContentType || 'audio/webm';
+      if (!mimeType || mimeType === 'application/octet-stream') {
+        const fn = (metaContent.audioFileName || audioFile.getName() || '').toLowerCase();
+        if (fn.endsWith('.wav')) mimeType = 'audio/wav';
+        else if (fn.endsWith('.m4a') || fn.endsWith('.mp4')) mimeType = 'audio/mp4';
+        else if (fn.endsWith('.aac')) mimeType = 'audio/aac';
+        else if (fn.endsWith('.mp3')) mimeType = 'audio/mpeg';
+        else if (fn.endsWith('.ogg')) mimeType = 'audio/ogg';
+        else mimeType = 'audio/webm';
+      }
       const base64Data = Utilities.base64Encode(audioBytes);
       const dataUrl = 'data:' + mimeType + ';base64,' + base64Data;
 
@@ -1099,7 +1109,7 @@ function doPost(e) {
         return createJsonResponse({
           status: 'error',
           code: 'UNAUTHORIZED_ADMIN',
-          message: 'Owner administrator authorization required to delete contributions. Trusted approvers cannot delete records.'
+          message: 'Admin authorization required to delete contributions.'
         });
       }
       const metadataFileId = String(payload.metadataFileId || '').trim();

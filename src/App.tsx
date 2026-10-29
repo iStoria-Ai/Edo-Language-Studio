@@ -381,7 +381,11 @@ export const App: React.FC = () => {
         (entryId, status) => {
           setEntries(prev => prev.map(item => item.id === entryId ? { ...item, syncStatus: status } : item));
         },
-        async entry => (await loadLibrary()).recordings.find(recording => recording.id === entry.recordingId)?.permissions
+        async entry => {
+          const library = await loadLibrary();
+          const rec = library.recordings.find(recording => recording.id === entry.recordingId || recording.originalLesson.id === entry.id);
+          return rec?.permissions || { playback: 'granted', aiVoiceTraining: 'denied', statementVersion: '1' };
+        }
       ).catch(err => {
         console.warn('Background upload worker error:', err);
       });
@@ -495,6 +499,15 @@ export const App: React.FC = () => {
     });
     await persistUpdatedEntries(updatedEntries);
     if (persistedAudioUri) {
+      const savedLibrary = await loadLibrary();
+      const savedRecording = savedLibrary.recordings.find(recording => recording.originalLesson.id === entryId || (recording.id && entryId.includes(recording.id)));
+      if (savedRecording) {
+        await saveRecordingInformation(savedRecording.id, savedRecording.speaker, {
+          playback: 'granted',
+          aiVoiceTraining: 'denied',
+          statementVersion: '1'
+        });
+      }
       enqueueForBackgroundUpload(entryId);
       triggerBackgroundWorker();
     } else if (updates.edoText !== undefined) {
@@ -548,7 +561,7 @@ export const App: React.FC = () => {
     entryId: string,
     audioDataUrl: string,
     durationSec: number,
-    playbackAllowed = false
+    playbackAllowed = true
   ) => {
     const persistedUri = await saveAudioFileLocally(entryId, audioDataUrl);
     const existing = entries.find(item => item.id === entryId);
@@ -571,8 +584,8 @@ export const App: React.FC = () => {
     await persistUpdatedEntries(updated);
 
     const saved = await loadLibrary();
-    const recording = saved.recordings.find(item => item.originalLesson.id === entryId);
-    if (recording) await saveRecordingInformation(recording.id, recording.speaker, { ...recording.permissions, playback: playbackAllowed ? 'granted' : 'denied' });
+    const recording = saved.recordings.find(item => item.originalLesson.id === entryId || item.id === entryToSave.recordingId);
+    if (recording) await saveRecordingInformation(recording.id, recording.speaker, { ...recording.permissions, playback: playbackAllowed !== false ? 'granted' : 'denied', aiVoiceTraining: 'denied', statementVersion: '1' });
     enqueueForBackgroundUpload(entryId);
     triggerBackgroundWorker();
   };
@@ -627,8 +640,8 @@ export const App: React.FC = () => {
     await persistUpdatedEntries([newEntry, ...entries]);
     if (hasVoice) {
       const saved = await loadLibrary();
-      const recording = saved.recordings.find(item => item.originalLesson.id === newId);
-      if (recording) await saveRecordingInformation(recording.id, recording.speaker, { ...recording.permissions, playback: params.playbackAllowed ? 'granted' : 'denied' });
+      const recording = saved.recordings.find(item => item.originalLesson.id === newId || item.id === newEntry.recordingId);
+      if (recording) await saveRecordingInformation(recording.id, recording.speaker, { ...recording.permissions, playback: params.playbackAllowed !== false ? 'granted' : 'denied', aiVoiceTraining: 'denied', statementVersion: '1' });
       enqueueForBackgroundUpload(newId);
       triggerBackgroundWorker();
     } else void refreshCommunity();

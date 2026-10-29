@@ -9,7 +9,6 @@ import {
   Lock,
   Pencil,
   CheckCircle,
-  ShieldCheck,
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
@@ -17,7 +16,7 @@ import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
 import { playAudioRecording, stopActivePlayback, MicrophoneRecorder } from '../services/audioService';
-import { getCommunityAudio } from '../services/communityLibrary';
+import { getCommunityAudio, updateOwnedRecordingPermissions } from '../services/communityLibrary';
 import { adminLockEntry, adminUnlockEntry, adminDeleteEntry, recordPlaybackToGateway } from '../services/cloudSyncService';
 
 export interface LanguageLibraryScreenProps {
@@ -67,11 +66,11 @@ export function isCompletedLesson(entry: EdoEntry): boolean {
 
   // Real human voice audio must be present (not sample metadata without audio)
   const hasValidLocalAudio = Boolean(entry.audioDataUrl && typeof entry.audioDataUrl === 'string' && entry.audioDataUrl.startsWith('data:audio/'));
-  const hasValidCloudAudio = Boolean(entry.cloudAudioFileId && entry.cloudAudioFileId.trim() && entry.playbackPermission !== 'denied');
+  const hasValidCloudAudio = Boolean(entry.cloudAudioFileId && entry.cloudAudioFileId.trim());
   const hasRealAudio = Boolean(entry.hasAudio && (hasValidLocalAudio || hasValidCloudAudio));
 
   // Must be verified cloud record or valid local recording
-  const isOnlineSynced = (entry.syncStatus === 'synced_to_drive' && Boolean(entry.cloudMetadataFileId) && Boolean(entry.cloudAudioFileId) && entry.playbackPermission !== 'denied') || hasValidLocalAudio;
+  const isOnlineSynced = (entry.syncStatus === 'synced_to_drive' && Boolean(entry.cloudMetadataFileId) && Boolean(entry.cloudAudioFileId)) || hasValidLocalAudio;
 
   return Boolean(hasEnglish && hasEdo && hasRealAudio && isOnlineSynced);
 }
@@ -99,6 +98,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [busy, setBusy] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalSuccess, setModalSuccess] = useState<string | null>(null);
+  const [permissionRenewBusy, setPermissionRenewBusy] = useState(false);
 
   // Admin lock, unlock, and delete expandable state
   const [showAdminUnlock, setShowAdminUnlock] = useState(false);
@@ -173,10 +173,36 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     return true;
   });
 
+  const handleRenewPermission = async () => {
+    if (!selectedEntry || !selectedEntry.cloudMetadataFileId) return;
+    setPermissionRenewBusy(true);
+    setModalError(null);
+    setModalSuccess(null);
+    try {
+      await updateOwnedRecordingPermissions(
+        selectedEntry.recordingId || selectedEntry.id,
+        selectedEntry.cloudMetadataFileId,
+        { playback: 'granted', aiVoiceTraining: 'denied' }
+      );
+      setSelectedEntry(prev => prev ? { ...prev, playbackPermission: 'granted' } : null);
+      setModalSuccess('Library playback permission granted! Other users can now listen to this recording.');
+      if (onLibraryChanged) await onLibraryChanged();
+    } catch (err: any) {
+      setModalError(err?.message || 'Unable to update permission. You can record a replacement voice below.');
+    } finally {
+      setPermissionRenewBusy(false);
+    }
+  };
+
   // Requirement 5: Speaker button strictly plays the Edo voice recording
   const handlePlayWordAudio = async (e: React.MouseEvent, entry: EdoEntry) => {
     e.stopPropagation();
     if (!entry.hasAudio) return;
+
+    if (entry.playbackPermission === 'denied') {
+      alert(`The contributor has not yet granted shared playback permission for "${entry.english}". You can tap the pencil icon to grant permission or record a replacement voice.`);
+      return;
+    }
 
     if (playingId === entry.id) {
       stopActivePlayback();
@@ -391,12 +417,12 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     }
   };
 
-  // Admin or Trusted Speaker lock submission (Approve & Protect)
+  // Admin lock submission (Approve & Protect)
   const handleAdminLock = async () => {
     if (!selectedEntry || !selectedEntry.cloudMetadataFileId) return;
     const token = adminTokenInput.trim();
     if (!token) {
-      setAdminLockError('Please enter your approval code or administrator token.');
+      setAdminLockError('Please enter your administrator credential.');
       return;
     }
 
@@ -408,7 +434,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
         if (onLibraryChanged) await onLibraryChanged();
         handleCloseModal();
       } else {
-        setAdminLockError(res.message || 'Approval failed. Invalid approval code.');
+        setAdminLockError(res.message || 'Approval failed. Invalid admin token.');
       }
     } catch (err: any) {
       setAdminLockError(String(err?.message || err));
@@ -518,13 +544,14 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
         {visibleEntries.map((entry) => {
           const isPlayingThis = playingId === entry.id;
           const isLocked = entry.reviewStatus === 'approved_locked';
+          const isPlaybackDenied = entry.playbackPermission === 'denied';
           const isVerifiedCloud = Boolean(
             entry.cloudMetadataFileId &&
             entry.cloudAudioFileId &&
-            entry.playbackPermission !== 'denied' &&
+            !isPlaybackDenied &&
             entry.syncStatus === 'synced_to_drive'
           );
-          const isLocalOnly = Boolean(entry.audioDataUrl && !isVerifiedCloud);
+          const isLocalOnly = Boolean(entry.audioDataUrl && !isVerifiedCloud && !isPlaybackDenied);
 
           return (
             <div
@@ -555,6 +582,8 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                       <span title="Approved & Protected" className="inline-flex items-center">
                         <Lock className="w-3.5 h-3.5 text-[#157A4C] shrink-0" />
                       </span>
+                    ) : isPlaybackDenied ? (
+                      <span className="inline-block w-2 h-2 rounded-full bg-[#EAB308] shrink-0" title="Playback permission restricted (Tap pencil to renew or replace voice)" />
                     ) : isVerifiedCloud ? (
                       <span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] shrink-0" title="Verified online with cloud recording" />
                     ) : isLocalOnly ? (
@@ -571,9 +600,12 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   type="button"
                   onClick={(e) => handlePlayWordAudio(e, entry)}
                   aria-label={`${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${entry.english}`}
+                  title={isPlaybackDenied ? 'Playback restricted (tap pencil to renew or replace voice)' : undefined}
                   className={`w-10 h-10 rounded-full flex items-center justify-center transition shrink-0 ${
                     isPlayingThis
                       ? 'bg-[#157A4C] text-white scale-105 shadow-xs'
+                      : isPlaybackDenied
+                      ? 'bg-[#FEF3C7] hover:bg-[#FDE68A] text-[#B45309]'
                       : 'bg-[#E5F4EC] hover:bg-[#D2ECDF] text-[#157A4C]'
                   }`}
                 >
@@ -624,16 +656,16 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       {selectedEntry && (
         <div
           onClick={handleCloseModal}
-          className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 pb-6"
+          className="absolute inset-0 bg-black/40 z-20 flex items-end justify-center p-3"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md max-h-[88dvh] flex flex-col rounded-3xl bg-[#FAF7F0] border border-[#E0D8C6] shadow-2xl overflow-hidden"
+            className="w-full max-h-[85dvh] overflow-y-auto rounded-3xl bg-[#FAF7F0] border border-[#E0D8C6] p-4.5 shadow-xl flex flex-col gap-3"
           >
-            {/* Modal Header — Vertically centered image, title, and unclipped close X */}
-            <div className="flex items-center justify-between px-4.5 py-3.5 border-b border-[#E6DFCF] bg-[#FAF7F0] shrink-0">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl bg-white border border-[#E0D8C6] flex items-center justify-center shrink-0 shadow-2xs overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between pb-2 border-b border-[#E6DFCF]">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-white border border-[#E0D8C6] flex items-center justify-center">
                   <WordIllustration
                     illustrationKey={selectedEntry.illustrationKey}
                     icon={selectedEntry.icon}
@@ -641,99 +673,268 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                     size="sm"
                   />
                 </div>
-                <h3 className="text-[17px] font-bold text-[#18241B] truncate leading-tight">
+                <h3 className="text-[17px] font-bold text-[#18241B]">
                   {selectedEntry.reviewStatus === 'approved_locked' ? 'Protected Lesson' : 'Edit Lesson'}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={handleCloseModal}
-                aria-label="Close edit window"
-                className="w-9 h-9 rounded-full bg-[#EFE9DA] hover:bg-[#E2DAC7] text-[#3A453D] flex items-center justify-center transition shrink-0 ml-2"
+                className="w-8 h-8 rounded-full bg-[#EFE9DA] flex items-center justify-center text-[#3A453D] hover:bg-[#E2DAC7]"
               >
-                <X className="w-4 h-4 stroke-[2.3]" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Scrollable Modal Body — Internal scrolling ensures bottom controls are never cut off */}
-            <div className="p-4 sm:p-4.5 overflow-y-auto space-y-3.5 flex-1 min-h-0 pb-6">
-              {/* Case A: Approved & Locked (Read-Only) */}
-              {selectedEntry.reviewStatus === 'approved_locked' ? (
-                <div className="space-y-3">
-                  <div className="p-3 bg-[#EBF7EE] border border-[#BDE5C8] rounded-2xl flex items-center gap-2.5">
-                    <Lock className="w-4 h-4 text-[#157A4C] shrink-0" />
-                    <p className="text-xs text-[#126941] font-semibold leading-relaxed">
-                      This lesson has been approved and locked. It is protected against community edits while remaining available for everyone to listen.
-                    </p>
-                  </div>
+            {/* Case A: Approved & Locked (Read-Only) */}
+            {selectedEntry.reviewStatus === 'approved_locked' ? (
+              <div className="space-y-3">
+                <div className="p-3 bg-[#EBF7EE] border border-[#BDE5C8] rounded-2xl flex items-center gap-2.5">
+                  <Lock className="w-4 h-4 text-[#157A4C] shrink-0" />
+                  <p className="text-xs text-[#126941] font-semibold leading-relaxed">
+                    This lesson has been approved and locked by an administrator. It is protected and cannot be edited by community users.
+                  </p>
+                </div>
 
-                  <div className="bg-white border border-[#E6DFCF] rounded-2xl p-3.5 space-y-2">
-                    <div>
-                      <span className="text-xs font-semibold text-[#68766E]">English</span>
-                      <p className="text-[15.5px] font-bold text-[#1A241D]">{selectedEntry.english}</p>
-                    </div>
-                    <div>
-                      <span className="text-xs font-semibold text-[#68766E]">Edo Spelling</span>
-                      <p className="text-[15.5px] font-bold text-[#157A4C]">{selectedEntry.edoText}</p>
-                    </div>
+                <div className="bg-white border border-[#E6DFCF] rounded-2xl p-3.5 space-y-2">
+                  <div>
+                    <span className="text-xs font-semibold text-[#68766E]">English</span>
+                    <p className="text-[15.5px] font-bold text-[#1A241D]">{selectedEntry.english}</p>
                   </div>
+                  <div>
+                    <span className="text-xs font-semibold text-[#68766E]">Edo Spelling</span>
+                    <p className="text-[15.5px] font-bold text-[#157A4C]">{selectedEntry.edoText}</p>
+                  </div>
+                </div>
 
-                  {/* Speaker playback */}
+                {/* Speaker playback */}
+                <button
+                  type="button"
+                  onClick={(e) => handlePlayWordAudio(e, selectedEntry)}
+                  className="w-full py-2.5 px-4 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-sm flex items-center justify-center gap-2 transition shadow-xs"
+                >
+                  <Volume2 className="w-4 h-4" />
+                  <span>{playingId === selectedEntry.id ? 'Stop Recorded Edo Voice' : 'Play Recorded Edo Voice'}</span>
+                </button>
+
+                {/* Administrator Unlock Option */}
+                <div className="pt-2 border-t border-[#E6DFCF]">
                   <button
                     type="button"
-                    onClick={(e) => handlePlayWordAudio(e, selectedEntry)}
-                    className="w-full py-2.5 px-4 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-sm flex items-center justify-center gap-2 transition shadow-xs"
+                    onClick={() => setShowAdminUnlock(!showAdminUnlock)}
+                    className="text-xs font-semibold text-[#556058] flex items-center gap-1 hover:text-[#1A241D]"
                   >
-                    <Volume2 className="w-4 h-4" />
-                    <span>{playingId === selectedEntry.id ? 'Stop Recorded Edo Voice' : 'Play Recorded Edo Voice'}</span>
+                    <span>Administrator options</span>
+                    {showAdminUnlock ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                   </button>
 
-                  {/* Administrator Unlock Option */}
+                  {showAdminUnlock && (
+                    <div className="mt-2.5 p-3 bg-white border border-[#E6DFCF] rounded-xl space-y-2">
+                      <label htmlFor="admin-unlock-token" className="text-xs font-bold text-[#1A241D]">
+                        Administrator Token
+                      </label>
+                      <input
+                        id="admin-unlock-token"
+                        type="password"
+                        value={adminTokenInput}
+                        onChange={(e) => setAdminTokenInput(e.target.value)}
+                        placeholder="Enter admin token"
+                        className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
+                      />
+                      {adminUnlockError && <p className="text-xs text-red-600 font-semibold">{adminUnlockError}</p>}
+                      {adminDeleteError && <p className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          type="button"
+                          disabled={adminUnlockBusy || adminDeleteBusy}
+                          onClick={handleAdminUnlock}
+                          className="flex-1 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-xs disabled:opacity-50"
+                        >
+                          {adminUnlockBusy ? 'Unlocking…' : 'Unlock Lesson'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={adminUnlockBusy || adminDeleteBusy}
+                          onClick={handleAdminDelete}
+                          className="flex-1 py-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
+                        >
+                          {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* Case B: Simplified Community Edit Form */
+              <div className="space-y-3">
+                {/* Field 1: English */}
+                <div>
+                  <label htmlFor="edit-english" className="block text-xs font-bold text-[#3A453D] mb-1">
+                    English word or phrase
+                  </label>
+                  <input
+                    id="edit-english"
+                    type="text"
+                    value={editEnglish}
+                    onChange={(e) => setEditEnglish(e.target.value)}
+                    className="w-full py-2 px-3.5 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
+                  />
+                </div>
+
+                {/* Field 2: Edo Translation */}
+                <div>
+                  <label htmlFor="edit-edo" className="block text-xs font-bold text-[#3A453D] mb-1">
+                    Edo spelling or translation
+                  </label>
+                  <input
+                    id="edit-edo"
+                    type="text"
+                    value={editEdoText}
+                    onChange={(e) => setEditEdoText(e.target.value)}
+                    className="w-full py-2 px-3.5 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
+                  />
+                </div>
+
+                {/* Playback Permission Renewal Callout for Older Denied Records */}
+                {selectedEntry.playbackPermission === 'denied' && (
+                  <div className="p-3 bg-[#FEF3C7] border border-[#FCD34D] rounded-2xl text-xs text-[#92400E] space-y-2">
+                    <p className="font-bold">
+                      Shared library playback is currently restricted for this recording.
+                    </p>
+                    <p className="leading-relaxed">
+                      Tap below to grant playback permission so everyone can listen, or record a replacement voice.
+                    </p>
+                    {selectedEntry.cloudMetadataFileId && (
+                      <button
+                        type="button"
+                        disabled={permissionRenewBusy}
+                        onClick={handleRenewPermission}
+                        className="py-1.5 px-3 rounded-xl bg-[#D97706] hover:bg-[#B45309] text-white font-bold text-xs transition disabled:opacity-50"
+                      >
+                        {permissionRenewBusy ? 'Granting Permission…' : 'Grant Library Playback Permission'}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Field 3: Voice Pronunciation & Replace Voice */}
+                <div className="p-3 bg-white border border-[#E6DFCF] rounded-2xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#3A453D]">Voice Pronunciation</span>
+                    {newAudioDataUrl ? (
+                      <span className="text-[11px] font-bold text-[#157A4C] flex items-center gap-1">
+                        <CheckCircle className="w-3 h-3" /> New voice recorded
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-[#7C857E]">Current voice saved</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Play Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (newAudioDataUrl) {
+                          handlePlayModalAudio(newAudioDataUrl, newAudioDuration);
+                        } else {
+                          handlePlayWordAudio({ stopPropagation: () => {} } as any, selectedEntry);
+                        }
+                      }}
+                      className="flex-1 py-2 px-3 rounded-xl bg-[#E5F4EC] hover:bg-[#D2ECDF] text-[#157A4C] font-bold text-xs flex items-center justify-center gap-1.5 transition"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-[#157A4C]" />
+                      <span>{playingId ? 'Playing…' : newAudioDataUrl ? 'Listen to New Voice' : 'Listen to Voice'}</span>
+                    </button>
+
+                    {/* Record / Replace Voice Button */}
+                    {isRecordingNewVoice ? (
+                      <button
+                        type="button"
+                        onClick={handleStopRecording}
+                        className="flex-1 py-2 px-3 rounded-xl bg-[#DC2626] text-white font-bold text-xs flex items-center justify-center gap-1.5 animate-pulse"
+                      >
+                        <Square className="w-3.5 h-3.5 fill-white" />
+                        <span>Stop ({recordingSeconds}s)</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleStartRecording}
+                        className="flex-1 py-2 px-3 rounded-xl bg-[#F3EDE0] hover:bg-[#EAE0CD] text-[#3A453D] font-bold text-xs flex items-center justify-center gap-1.5 transition"
+                      >
+                        <Mic className="w-3.5 h-3.5 text-[#157A4C]" />
+                        <span>{newAudioDataUrl ? 'Record Again' : 'Replace Voice'}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {newAudioDataUrl && (
+                    <p className="text-[11.5px] text-[#556058] text-center leading-relaxed pt-1 px-1">
+                      By submitting your recording, you agree to share it for listening in the Edo Language Studio Library. Your voice will not be used for AI training.
+                    </p>
+                  )}
+                </div>
+
+                {modalError && (
+                  <p role="alert" className="text-xs text-red-600 font-semibold">{modalError}</p>
+                )}
+                {modalSuccess && (
+                  <p role="status" className="text-xs text-[#157A4C] font-semibold">{modalSuccess}</p>
+                )}
+
+                {/* Single Save Button */}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={handleSaveChanges}
+                  className="w-full py-2.5 px-4 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-sm shadow-xs transition disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  <span>{busy ? 'Saving Changes…' : 'Save Changes'}</span>
+                </button>
+
+                {/* Administrator Approval Option (Locks contribution permanently) */}
+                {selectedEntry.cloudMetadataFileId && (
                   <div className="pt-2 border-t border-[#E6DFCF]">
                     <button
                       type="button"
-                      onClick={() => setShowAdminUnlock(!showAdminUnlock)}
-                      className="text-xs font-semibold text-[#556058] flex items-center gap-1.5 hover:text-[#1A241D] transition"
+                      onClick={() => setShowAdminLock(!showAdminLock)}
+                      className="text-xs font-semibold text-[#556058] flex items-center gap-1 hover:text-[#1A241D]"
                     >
-                      <ShieldCheck className="w-3.5 h-3.5 text-[#157A4C]" />
                       <span>Administrator options</span>
-                      {showAdminUnlock ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                      {showAdminLock ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                     </button>
 
-                    {showAdminUnlock && (
-                      <div className="mt-2.5 p-3.5 bg-white border border-[#E6DFCF] rounded-2xl space-y-2.5">
-                        <div>
-                          <label htmlFor="admin-unlock-token" className="block text-xs font-bold text-[#1A241D]">
-                            Administrator Token
-                          </label>
-                          <p className="text-[11px] text-[#606C63] mt-0.5 leading-snug">
-                            Unlocking and deletion strictly require the owner&apos;s administrator credentials.
-                          </p>
-                        </div>
+                    {showAdminLock && (
+                      <div className="mt-2.5 p-3 bg-white border border-[#E6DFCF] rounded-xl space-y-2">
+                        <label htmlFor="admin-lock-token" className="text-xs font-bold text-[#1A241D]">
+                          Administrator Token
+                        </label>
                         <input
-                          id="admin-unlock-token"
+                          id="admin-lock-token"
                           type="password"
                           value={adminTokenInput}
                           onChange={(e) => setAdminTokenInput(e.target.value)}
-                          placeholder="Enter administrator token"
+                          placeholder="Enter admin token"
                           className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
                         />
-                        {adminUnlockError && <p role="alert" className="text-xs text-red-600 font-semibold">{adminUnlockError}</p>}
-                        {adminDeleteError && <p role="alert" className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
+                        {adminLockError && <p className="text-xs text-red-600 font-semibold">{adminLockError}</p>}
+                        {adminDeleteError && <p className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
                         <div className="flex gap-2 pt-1">
                           <button
                             type="button"
-                            disabled={adminUnlockBusy || adminDeleteBusy}
-                            onClick={handleAdminUnlock}
-                            className="flex-1 py-2 px-3 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-xs disabled:opacity-50 transition shadow-xs"
+                            disabled={adminLockBusy || adminDeleteBusy}
+                            onClick={handleAdminLock}
+                            className="flex-1 py-2 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs disabled:opacity-50"
                           >
-                            {adminUnlockBusy ? 'Unlocking…' : 'Unlock Lesson'}
+                            {adminLockBusy ? 'Approving…' : 'Approve & Lock'}
                           </button>
                           <button
                             type="button"
-                            disabled={adminUnlockBusy || adminDeleteBusy}
+                            disabled={adminLockBusy || adminDeleteBusy}
                             onClick={handleAdminDelete}
-                            className="flex-1 py-2 px-3 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50 transition shadow-xs"
+                            className="flex-1 py-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
                           >
                             {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
                           </button>
@@ -741,171 +942,9 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                       </div>
                     )}
                   </div>
-                </div>
-              ) : (
-                /* Case B: Simplified Community Edit Form */
-                <div className="space-y-3">
-                  {/* Field 1: English */}
-                  <div>
-                    <label htmlFor="edit-english" className="block text-xs font-bold text-[#3A453D] mb-1">
-                      English word or phrase
-                    </label>
-                    <input
-                      id="edit-english"
-                      type="text"
-                      value={editEnglish}
-                      onChange={(e) => setEditEnglish(e.target.value)}
-                      className="w-full py-2 px-3.5 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
-                    />
-                  </div>
-
-                  {/* Field 2: Edo Translation */}
-                  <div>
-                    <label htmlFor="edit-edo" className="block text-xs font-bold text-[#3A453D] mb-1">
-                      Edo spelling or translation
-                    </label>
-                    <input
-                      id="edit-edo"
-                      type="text"
-                      value={editEdoText}
-                      onChange={(e) => setEditEdoText(e.target.value)}
-                      className="w-full py-2 px-3.5 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
-                    />
-                  </div>
-
-                  {/* Field 3: Voice Pronunciation & Replace Voice */}
-                  <div className="p-3 bg-white border border-[#E6DFCF] rounded-2xl space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-[#3A453D]">Voice Pronunciation</span>
-                      {newAudioDataUrl ? (
-                        <span className="text-[11px] font-bold text-[#157A4C] flex items-center gap-1">
-                          <CheckCircle className="w-3 h-3" /> New voice recorded
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-[#7C857E]">Current voice saved</span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {/* Play Button */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (newAudioDataUrl) {
-                            handlePlayModalAudio(newAudioDataUrl, newAudioDuration);
-                          } else {
-                            handlePlayWordAudio({ stopPropagation: () => {} } as any, selectedEntry);
-                          }
-                        }}
-                        className="flex-1 py-2 px-3 rounded-xl bg-[#E5F4EC] hover:bg-[#D2ECDF] text-[#157A4C] font-bold text-xs flex items-center justify-center gap-1.5 transition"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-[#157A4C]" />
-                        <span>{playingId ? 'Playing…' : newAudioDataUrl ? 'Listen to New Voice' : 'Listen to Voice'}</span>
-                      </button>
-
-                      {/* Record / Replace Voice Button */}
-                      {isRecordingNewVoice ? (
-                        <button
-                          type="button"
-                          onClick={handleStopRecording}
-                          className="flex-1 py-2 px-3 rounded-xl bg-[#DC2626] text-white font-bold text-xs flex items-center justify-center gap-1.5 animate-pulse"
-                        >
-                          <Square className="w-3.5 h-3.5 fill-white" />
-                          <span>Stop ({recordingSeconds}s)</span>
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={handleStartRecording}
-                          className="flex-1 py-2 px-3 rounded-xl bg-[#F3EDE0] hover:bg-[#EAE0CD] text-[#3A453D] font-bold text-xs flex items-center justify-center gap-1.5 transition"
-                        >
-                          <Mic className="w-3.5 h-3.5 text-[#157A4C]" />
-                          <span>{newAudioDataUrl ? 'Record Again' : 'Replace Voice'}</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {modalError && (
-                    <p role="alert" className="text-xs text-red-600 font-semibold">{modalError}</p>
-                  )}
-                  {modalSuccess && (
-                    <p role="status" className="text-xs text-[#157A4C] font-semibold">{modalSuccess}</p>
-                  )}
-
-                  {/* Single Save Button */}
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={handleSaveChanges}
-                    className="w-full py-2.5 px-4 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-sm shadow-xs transition disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    <span>{busy ? 'Saving Changes…' : 'Save Changes'}</span>
-                  </button>
-
-                  {/* Administrator & Trusted Approver Option (Locks contribution permanently) */}
-                  {selectedEntry.cloudMetadataFileId && (
-                    <div className="pt-2 border-t border-[#E6DFCF]">
-                      <button
-                        type="button"
-                        onClick={() => setShowAdminLock(!showAdminLock)}
-                        className="text-xs font-semibold text-[#556058] flex items-center gap-1.5 hover:text-[#1A241D] transition"
-                      >
-                        <ShieldCheck className="w-3.5 h-3.5 text-[#157A4C]" />
-                        <span>Administrator options</span>
-                        {showAdminLock ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                      </button>
-
-                      {showAdminLock && (
-                        <div className="mt-2.5 p-3.5 bg-white border border-[#E6DFCF] rounded-2xl space-y-2.5">
-                          <div>
-                            <label htmlFor="admin-lock-token" className="block text-xs font-bold text-[#1A241D]">
-                              Approval Code or Admin Credential
-                            </label>
-                            <p className="text-[11px] text-[#606C63] mt-0.5 leading-snug">
-                              Trusted Edo speakers can enter their secret approval code to verify and permanently lock this lesson against community edits.
-                            </p>
-                          </div>
-                          <input
-                            id="admin-lock-token"
-                            type="password"
-                            value={adminTokenInput}
-                            onChange={(e) => setAdminTokenInput(e.target.value)}
-                            placeholder="Enter approval code"
-                            className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
-                          />
-                          {adminLockError && <p role="alert" className="text-xs text-red-600 font-semibold">{adminLockError}</p>}
-                          {adminDeleteError && <p role="alert" className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
-                          <div className="flex gap-2 pt-1">
-                            <button
-                              type="button"
-                              disabled={adminLockBusy || adminDeleteBusy}
-                              onClick={handleAdminLock}
-                              className="flex-1 py-2 px-3 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs disabled:opacity-50 flex items-center justify-center gap-1.5 transition shadow-xs"
-                            >
-                              <Lock className="w-3.5 h-3.5" />
-                              <span>{adminLockBusy ? 'Approving…' : 'Approve & Lock'}</span>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={adminLockBusy || adminDeleteBusy}
-                              onClick={handleAdminDelete}
-                              title="Owner administrator action"
-                              className="py-2 px-3 rounded-xl bg-[#FEE2E2] hover:bg-[#FECACA] text-[#DC2626] font-bold text-xs disabled:opacity-50 transition"
-                            >
-                              {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
-                            </button>
-                          </div>
-                          <p className="text-[10.5px] text-[#7C857E] text-center leading-tight">
-                            Delete action strictly requires the owner&apos;s administrator token.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -117,3 +117,4 @@ assert.equal(availableQuestions[1].id, 'food-rice');
 console.log('✓ Answered words correctly excluded by ID and normalized English.');
 
 console.log('=== ALL VOCABULARY EXPANSION TESTS PASSED! ===');
+

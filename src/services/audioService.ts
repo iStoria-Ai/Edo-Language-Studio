@@ -877,12 +877,19 @@ export function playAudioRecording(
   stopActivePlayback();
   stopEnglishPrompt();
 
-  const playableUrl = (audioSourceUrl && typeof audioSourceUrl === 'string' && audioSourceUrl.trim()) || '';
+  let playableUrl = (audioSourceUrl && typeof audioSourceUrl === 'string' && audioSourceUrl.trim()) || '';
 
   if (!playableUrl) {
     onProgress?.(0, false);
     options.onError?.('No recorded voice is available to play.');
     return () => {};
+  }
+
+  // Normalize generic or missing MIME data URLs for iOS Safari and mobile browsers
+  if (playableUrl.startsWith('data:application/octet-stream')) {
+    playableUrl = playableUrl.replace('data:application/octet-stream', 'data:audio/webm');
+  } else if (playableUrl.startsWith('data:;base64,')) {
+    playableUrl = playableUrl.replace('data:;base64,', 'data:audio/webm;base64,');
   }
 
   const audio = new Audio();
