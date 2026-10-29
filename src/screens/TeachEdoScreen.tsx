@@ -200,6 +200,27 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
         setPlaybackSeconds(0);
         setIsPlaying(false);
         updateStep('recorded');
+
+        // Automatically play the recorded voice once without looping
+        const sourceToPlay = result.objectUrl || result.audioDataUrl;
+        if (sourceToPlay) {
+          setIsPlaying(true);
+          stopPlaybackRef.current = playAudioRecording(
+            sourceToPlay,
+            result.durationSec,
+            (sec, playing) => {
+              setPlaybackSeconds(sec);
+              setIsPlaying(playing);
+            },
+            {
+              allowDemoFallback: false,
+              onError: (msg) => {
+                setIsPlaying(false);
+                setRecordingError(msg);
+              }
+            }
+          );
+        }
       }
     }
   };

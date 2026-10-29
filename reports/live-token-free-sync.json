@@ -1,0 +1,21 @@
+{
+  "checkedAt": "20261029T002556Z",
+  "tokenProvided": false,
+  "communityPing": "passed",
+  "upload": "passed",
+  "retrievedAudioBytesMatch": true,
+  "duplicatePrevention": "passed",
+  "syntheticAudio": true,
+  "uploadResponse": {
+    "status": "success",
+    "duplicate": false,
+    "action": "upload_recording",
+    "lessonId": "sync-test-20261029T002556Z",
+    "recordingId": "sync-test-20261029T002556Z",
+    "audioFileId": "1bFkxiwYyKHFWTjUmu_niIpNRuNVZPFPR",
+    "metadataFileId": "1wiaj8L-EBy3Bs7IStiT-QiDjWGu4zuvI",
+    "recordingStatus": "spelling_submitted",
+    "verified": true,
+    "message": "Recording and metadata verified and stored securely in Google Drive."
+  }
+}

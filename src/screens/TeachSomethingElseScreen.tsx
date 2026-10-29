@@ -89,6 +89,20 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
         }
         setAudioDataUrl(res.audioDataUrl);
         setAudioDuration(res.durationSec);
+
+        // Automatically play the recorded voice once without looping
+        setIsPlaying(true);
+        playAudioRecording(
+          res.audioDataUrl,
+          res.durationSec,
+          (_sec, playing) => {
+            setIsPlaying(playing);
+          },
+          {
+            allowDemoFallback: false,
+            onError: () => setIsPlaying(false)
+          }
+        );
       }
     }
   };

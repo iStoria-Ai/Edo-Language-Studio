@@ -147,6 +147,21 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
         }
         setCapturedAudioUrl(res.audioDataUrl);
         setCapturedDuration(res.durationSec);
+
+        // Automatically play the recorded voice once without looping
+        setIsPlaying(true);
+        playAudioRecording(
+          res.audioDataUrl,
+          res.durationSec,
+          (sec, playing) => {
+            setPlaybackSec(sec);
+            setIsPlaying(playing);
+          },
+          {
+            allowDemoFallback: false,
+            onError: () => setIsPlaying(false)
+          }
+        );
       }
     }
   };
