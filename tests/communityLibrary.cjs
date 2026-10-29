@@ -65,5 +65,69 @@ const shared = { id: 'cloud-rec-a', recordingId: 'rec-a', sourceLessonId: 'word-
   assert.equal(a.api.nextUnansweredQuestion(prompts, new Set(['q1'])), 1);
   assert.equal(a.api.nextUnansweredQuestion(prompts, new Set(['q1', 'q2'])), -1, 'Completed question bank must never wrap to an answered question');
   assert.equal(a.api.nextUnansweredQuestion(prompts, new Set()), 0, 'Sample audio must not count as a community answer');
-  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, and exhausted global questions.');
+
+  // Multi-browser synchronization simulation (Browser A -> Gateway -> Browser B)
+  const browserAState = new Map();
+  const browserBState = new Map();
+  let cloudItems = [shared];
+  const gatewayMock = async (url, options) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'get_library') {
+      return { ok: true, json: async () => ({ status: 'success', items: cloudItems, answeredQuestionIds: cloudItems.map(i => i.sourceLessonId), checkedAt: new Date().toISOString() }) };
+    }
+    if (payload.action === 'admin_lock_entry') {
+      const it = cloudItems.find(i => i.cloudMetadataFileId === payload.metadataFileId);
+      if (it) { it.reviewStatus = 'approved_locked'; it.approvedBy = { id: 'admin-1', name: 'Admin', approvedAt: new Date().toISOString() }; }
+      return { ok: true, json: async () => ({ status: 'success', action: 'admin_lock_entry', reviewStatus: 'approved_locked' }) };
+    }
+    if (payload.action === 'admin_unlock_entry') {
+      const it = cloudItems.find(i => i.cloudMetadataFileId === payload.metadataFileId);
+      if (it) { it.reviewStatus = 'pending_approval'; it.approvedBy = null; }
+      return { ok: true, json: async () => ({ status: 'success', action: 'admin_unlock_entry', reviewStatus: 'pending_approval' }) };
+    }
+    throw Error(payload.action);
+  };
+
+  const clientA = device(browserAState, gatewayMock);
+  const clientB = device(browserBState, gatewayMock);
+
+  // Browser A contributes new phrase "Where are you going?"
+  const newPhrase = {
+    id: 'cloud-rec-phrase-going',
+    recordingId: 'rec-phrase-going',
+    sourceLessonId: 'sentence-going',
+    english: 'Where are you going?',
+    edoText: 'De ogba gha?',
+    category: 'sentence',
+    hasAudio: true,
+    cloudAudioFileId: 'audio-going',
+    cloudMetadataFileId: 'meta-going',
+    isCommunity: true,
+    playbackPermission: 'granted',
+    status: 'awaiting_review',
+    reviewStatus: 'pending_approval',
+    isSampleData: false,
+    updatedAt: new Date().toISOString()
+  };
+  cloudItems.push(newPhrase);
+
+  // Browser B opens app and automatically fetches community library
+  const clientBSnapshot = await clientB.api.fetchCommunityLibrary();
+  assert.equal(clientBSnapshot.entries.length, 2, 'Browser B automatically receives new contribution from Browser A');
+  const receivedPhrase = clientBSnapshot.entries.find(e => e.recordingId === 'rec-phrase-going');
+  assert.equal(receivedPhrase.english, 'Where are you going?', 'Full phrase text preserved without truncation');
+  assert.equal(receivedPhrase.edoText, 'De ogba gha?', 'Full Edo spelling preserved without truncation');
+  assert.equal(receivedPhrase.reviewStatus, 'pending_approval', 'Contribution starts as pending_approval');
+
+  // Admin approves and locks phrase
+  const lockResult = await gatewayMock('', { body: JSON.stringify({ action: 'admin_lock_entry', metadataFileId: 'meta-going' }) });
+  const lockJson = await lockResult.json();
+  assert.equal(lockJson.status, 'success');
+  assert.equal(lockJson.reviewStatus, 'approved_locked');
+
+  // Browser B re-fetches and verifies locked status
+  const clientBUpdated = await clientB.api.fetchCommunityLibrary();
+  assert.equal(clientBUpdated.entries.find(e => e.recordingId === 'rec-phrase-going').reviewStatus, 'approved_locked');
+
+  console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, and admin locking.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

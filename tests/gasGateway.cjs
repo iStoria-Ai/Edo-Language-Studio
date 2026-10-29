@@ -491,10 +491,11 @@ function runTests() {
   assert.equal(adminUnlock.reviewStatus, 'pending_approval');
   console.log('✓ Admin successfully unlocked entry.');
 
-  // Test doGet admin dashboard
-  const adminViewGet = sandbox.doGet({ parameter: { admin_token: adminToken } });
-  assert.ok(adminViewGet.getContent().includes('Edo Language Studio — Administrator Approvals'));
-  console.log('✓ Admin dashboard HTML rendered successfully for authorized admin token.');
+  // Test doGet health check (tokens are never accepted in GET URLs)
+  const healthGet = JSON.parse(sandbox.doGet({}).getContent());
+  assert.equal(healthGet.status, 'ok');
+  assert.equal(healthGet.folderConnected, true);
+  console.log('✓ Health check GET verified (tokens strictly confined to secure POST bodies).');
 
   console.log('\n=== ALL AUTOMATED TESTS ON gas/Code.gs PASSED! ===');
 }

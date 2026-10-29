@@ -189,49 +189,11 @@ function isFileInStudioFolder(file) {
 }
 
 /**
- * Health check endpoint (GET) and Administrator Approval Dashboard.
+ * Health check endpoint (GET).
+ * Administrator actions strictly require authenticated POST requests; tokens are never accepted in URLs.
  */
 function doGet(e) {
   try {
-    const adminToken = e && e.parameter && e.parameter.admin_token ? String(e.parameter.admin_token).trim() : '';
-    if (adminToken) {
-      const admin = getVerifiedContributor(adminToken, 'admin_lock_entry');
-      if (!admin || admin.role !== 'admin') {
-        return createJsonResponse({ status: 'error', code: 'UNAUTHORIZED_ADMIN', message: 'Invalid administrator token.' });
-      }
-      const folder = DriveApp.getFolderById(TARGET_FOLDER_ID);
-      const items = sharedLibraryItems(folder);
-      const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Edo Studio Admin Approvals</title>' +
-        '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-        '<style>body{font-family:system-ui,-apple-system,sans-serif;background:#FAF7F0;color:#1A241D;margin:0;padding:24px;}' +
-        '.header{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #E6DFCF;padding-bottom:16px;margin-bottom:24px;}' +
-        '.badge-locked{background:#DCFCE7;color:#15803D;padding:4px 10px;border-radius:12px;font-weight:700;font-size:12px;}' +
-        '.badge-pending{background:#FEF3C7;color:#B45309;padding:4px 10px;border-radius:12px;font-weight:700;font-size:12px;}' +
-        '.card{background:#fff;border:1px solid #E6DFCF;border-radius:16px;padding:16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;gap:16px;}' +
-        '.btn{padding:8px 16px;border-radius:10px;border:none;cursor:pointer;font-weight:600;font-size:13px;}' +
-        '.btn-lock{background:#157A4C;color:#fff;}' +
-        '.btn-unlock{background:#DC2626;color:#fff;}' +
-        '</style></head><body><div class="header"><div><h1 style="margin:0 0 6px;">Edo Language Studio — Administrator Approvals</h1>' +
-        '<p style="margin:0;color:#556058;">Logged in as: <strong>' + admin.name + '</strong> (Administrator)</p></div></div>' +
-        '<div class="list">' +
-        items.map(function(item) {
-          const isLocked = item.reviewStatus === 'approved_locked';
-          return '<div class="card"><div><p style="margin:0 0 4px;font-weight:700;font-size:16px;">English: ' + item.english + '</p>' +
-            '<p style="margin:0;color:#157A4C;font-size:15px;">Edo: <strong>' + (item.edoText || 'Needs writing') + '</strong></p>' +
-            '<p style="margin:4px 0 0;font-size:12px;color:#7C857E;">ID: ' + item.recordingId + ' · Has Audio: ' + (item.hasAudio ? 'Yes' : 'No') + '</p></div>' +
-            '<div style="display:flex;align-items:center;gap:12px;">' +
-            '<span class="' + (isLocked ? 'badge-locked' : 'badge-pending') + '">' + (isLocked ? '🔒 Approved & Locked' : '⏳ Pending Approval') + '</span>' +
-            '<button class="btn ' + (isLocked ? 'btn-unlock' : 'btn-lock') + '" onclick="toggleLock(\'' + item.cloudMetadataFileId + '\',\'' + (isLocked ? 'admin_unlock_entry' : 'admin_lock_entry') + '\')">' +
-            (isLocked ? 'Unlock Entry' : 'Approve & Lock') + '</button></div></div>';
-        }).join('') +
-        '</div>' +
-        '<script>function toggleLock(metadataFileId, action){if(!confirm("Change approval status for this entry?"))return;' +
-        'fetch("",{method:"POST",headers:{"Content-Type":"text/plain"},body:JSON.stringify({action:action,metadataFileId:metadataFileId,authToken:"' + adminToken + '"})})' +
-        '.then(function(r){return r.json();}).then(function(res){if(res.status==="success")window.location.reload();else alert(res.message||"Action failed");})' +
-        '.catch(function(err){alert(err.message);});}</script>' +
-        '</body></html>';
-      return HtmlService.createHtmlOutput(html).setTitle('Edo Studio Admin Approvals');
-    }
     const folder = DriveApp.getFolderById(TARGET_FOLDER_ID);
     return createJsonResponse({
       status: 'ok',

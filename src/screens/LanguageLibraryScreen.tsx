@@ -16,7 +16,7 @@ import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
 import { playAudioRecording, stopActivePlayback, MicrophoneRecorder } from '../services/audioService';
 import { getCommunityAudio } from '../services/communityLibrary';
-import { adminUnlockEntry } from '../services/cloudSyncService';
+import { adminLockEntry, adminUnlockEntry } from '../services/cloudSyncService';
 
 export interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
@@ -77,11 +77,14 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalSuccess, setModalSuccess] = useState<string | null>(null);
 
-  // Admin unlock expandable state
+  // Admin lock and unlock expandable state
   const [showAdminUnlock, setShowAdminUnlock] = useState(false);
+  const [showAdminLock, setShowAdminLock] = useState(false);
   const [adminTokenInput, setAdminTokenInput] = useState('');
   const [adminUnlockBusy, setAdminUnlockBusy] = useState(false);
   const [adminUnlockError, setAdminUnlockError] = useState<string | null>(null);
+  const [adminLockBusy, setAdminLockBusy] = useState(false);
+  const [adminLockError, setAdminLockError] = useState<string | null>(null);
 
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -112,8 +115,10 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     setModalError(null);
     setModalSuccess(null);
     setShowAdminUnlock(false);
+    setShowAdminLock(false);
     setAdminTokenInput('');
     setAdminUnlockError(null);
+    setAdminLockError(null);
   };
 
   const handleCloseModal = () => {
@@ -339,6 +344,32 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       setAdminUnlockError(String(err?.message || err));
     } finally {
       setAdminUnlockBusy(false);
+    }
+  };
+
+  // Admin lock submission (Approve & Protect)
+  const handleAdminLock = async () => {
+    if (!selectedEntry || !selectedEntry.cloudMetadataFileId) return;
+    const token = adminTokenInput.trim();
+    if (!token) {
+      setAdminLockError('Please enter your administrator credential.');
+      return;
+    }
+
+    setAdminLockBusy(true);
+    setAdminLockError(null);
+    try {
+      const res = await adminLockEntry(selectedEntry.cloudMetadataFileId, token);
+      if (res.ok) {
+        if (onLibraryChanged) await onLibraryChanged();
+        handleCloseModal();
+      } else {
+        setAdminLockError(res.message || 'Approval failed. Invalid admin token.');
+      }
+    } catch (err: any) {
+      setAdminLockError(String(err?.message || err));
+    } finally {
+      setAdminLockBusy(false);
     }
   };
 
@@ -677,6 +708,45 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 >
                   <span>{busy ? 'Saving Changes…' : 'Save Changes'}</span>
                 </button>
+
+                {/* Administrator Approval Option (Locks contribution permanently) */}
+                {selectedEntry.cloudMetadataFileId && (
+                  <div className="pt-2 border-t border-[#E6DFCF]">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminLock(!showAdminLock)}
+                      className="text-xs font-semibold text-[#556058] flex items-center gap-1 hover:text-[#1A241D]"
+                    >
+                      <span>Administrator options</span>
+                      {showAdminLock ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {showAdminLock && (
+                      <div className="mt-2.5 p-3 bg-white border border-[#E6DFCF] rounded-xl space-y-2">
+                        <label htmlFor="admin-lock-token" className="text-xs font-bold text-[#1A241D]">
+                          Administrator Token
+                        </label>
+                        <input
+                          id="admin-lock-token"
+                          type="password"
+                          value={adminTokenInput}
+                          onChange={(e) => setAdminTokenInput(e.target.value)}
+                          placeholder="Enter admin token to approve and lock"
+                          className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
+                        />
+                        {adminLockError && <p className="text-xs text-red-600 font-semibold">{adminLockError}</p>}
+                        <button
+                          type="button"
+                          disabled={adminLockBusy}
+                          onClick={handleAdminLock}
+                          className="w-full py-2 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs disabled:opacity-50"
+                        >
+                          {adminLockBusy ? 'Approving…' : 'Approve & Lock Lesson'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
