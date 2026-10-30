@@ -192,6 +192,7 @@ export function getVocabularyImageUrl(params: {
   english?: string;
   illustrationKey?: string;
   imageUrl?: string;
+  skipLocalCache?: boolean;
 }): string {
   // These subjects were visually audited; earlier JPGs contained unrelated photos.
   const verifiedSubject = normalizeEnglish(params.english || '');
@@ -227,7 +228,7 @@ export function getVocabularyImageUrl(params: {
 
     // Check online image cache for dynamic vocabulary
     try {
-      if (typeof localStorage !== 'undefined') {
+      if (!params.skipLocalCache && typeof localStorage !== 'undefined') {
         const cached = localStorage.getItem(ONLINE_IMAGES_CACHE_KEY);
         if (cached) {
           const map = JSON.parse(cached);

@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronUp
 } from 'lucide-react';
+import { getChildrenAudio } from '../services/childrenLibraryService';
 import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
@@ -21,6 +22,7 @@ import { adminLockEntry, adminUnlockEntry, adminDeleteEntry, recordPlaybackToGat
 
 export interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
+  readOnly?: boolean;
   onCommunitySync?: () => Promise<void>;
   communityBusy?: boolean;
   communityError?: string;
@@ -81,6 +83,7 @@ export function isCompletedLesson(entry: EdoEntry): boolean {
 
 export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   entries,
+  readOnly = false,
   communityError, communityCheckedAt, communityBusy,
   onLibraryChanged,
   onEditText,
@@ -134,6 +137,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
 
   // When opening an entry, initialize edit fields
   const handleOpenEntry = (entry: EdoEntry) => {
+    if (readOnly) return;
     stopActivePlayback();
     setSelectedEntry(entry);
     setEditEnglish(entry.english);
@@ -162,7 +166,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   };
 
   // Requirement 3: Only completed lessons appear in learning Library
-  const completedEntries = entries.filter(isCompletedLesson);
+  const completedEntries = entries.filter(entry => isCompletedLesson(entry) && (!readOnly || entry.playbackPermission === 'granted'));
 
   const visibleEntries = completedEntries.filter((entry) => {
     if (activeFilter === 'words' && entry.category !== 'word') return false;
@@ -216,7 +220,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     }
 
     const trackPlayback = () => {
-      if (entry.cloudMetadataFileId) {
+      if (!readOnly && entry.cloudMetadataFileId) {
         void recordPlaybackToGateway(entry.cloudMetadataFileId).then(res => {
           if (res.ok && (res.autoLocked || res.reviewStatus === 'approved_locked')) {
             void onLibraryChanged?.();
@@ -247,7 +251,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     if (entry.cloudAudioFileId) {
       setPlayingId(entry.id);
       try {
-        const audioUrl = await getCommunityAudio(entry);
+        const audioUrl = await (readOnly ? getChildrenAudio(entry) : getCommunityAudio(entry));
         if (!audioUrl) {
           setPlayingId(null);
           return;
@@ -484,9 +488,9 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       <StudioHeader
         theme="yellow"
         sectionLabel="Language Library"
-        rightAction="close"
-        onRightAction={onBackToDashboard}
-        onLogoClick={onBackToDashboard}
+        rightAction={readOnly ? 'none' : 'close'}
+        onRightAction={readOnly ? undefined : onBackToDashboard}
+        onLogoClick={readOnly ? undefined : onBackToDashboard}
       />
 
       {/* Subtitle / Counter */}
@@ -571,6 +575,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                     english={entry.english}
                     illustrationKey={entry.illustrationKey}
                     imageUrl={entry.imageUrl}
+                    skipLocalCache={readOnly}
                     size="sm"
                   />
                 </div>
@@ -618,7 +623,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 </button>
 
                 {/* Edit Button (Pencil) — ONLY this opens the editing window */}
-                {!isLocked ? (
+                {!readOnly && (!isLocked ? (
                   <button
                     type="button"
                     onClick={(e) => {
@@ -644,7 +649,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   >
                     <Lock className="w-3.5 h-3.5" />
                   </button>
-                )}
+                ))}
               </div>
             </div>
           );
@@ -658,7 +663,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       </div>
 
       {/* Simplified Single-Screen Mobile Details / Edit Modal */}
-      {selectedEntry && (
+      {!readOnly && selectedEntry && (
         <div
           onClick={handleCloseModal}
           className="absolute inset-0 bg-black/40 z-20 flex items-end justify-center p-3"

@@ -11,6 +11,7 @@ interface WordIllustrationProps {
   size?: 'sm' | 'md' | 'lg';
   className?: string;
   allowOnlineDiscovery?: boolean;
+  skipLocalCache?: boolean;
 }
 
 export const WordIllustration: React.FC<WordIllustrationProps> = ({
@@ -19,17 +20,17 @@ export const WordIllustration: React.FC<WordIllustrationProps> = ({
   illustrationKey,
   imageUrl: initialImageUrl,
   size = 'lg',
-  className = '', allowOnlineDiscovery = false
+  className = '', allowOnlineDiscovery = false, skipLocalCache = false
 }) => {
   const [resolvedUrl, setResolvedUrl] = useState<string>(() =>
-    getVocabularyImageUrl({ id, english, illustrationKey, imageUrl: initialImageUrl })
+    getVocabularyImageUrl({ id, english, illustrationKey, imageUrl: initialImageUrl, skipLocalCache })
   );
   const [isLoaded, setIsLoaded] = useState(false);
 
   // Sync when props change
   useEffect(() => {
     setIsLoaded(false);
-    const standardUrl = getVocabularyImageUrl({ id, english, illustrationKey, imageUrl: initialImageUrl });
+    const standardUrl = getVocabularyImageUrl({ id, english, illustrationKey, imageUrl: initialImageUrl, skipLocalCache });
     setResolvedUrl(standardUrl);
 
     // If it's a dynamic word and not in static curated list, try discovering an online licensed photo
@@ -44,7 +45,7 @@ export const WordIllustration: React.FC<WordIllustrationProps> = ({
         active = false;
       };
     }
-  }, [id, english, illustrationKey, initialImageUrl, allowOnlineDiscovery]);
+  }, [id, english, illustrationKey, initialImageUrl, allowOnlineDiscovery, skipLocalCache]);
 
   const sizeClasses = {
     sm: 'w-10 h-10 rounded-xl',
