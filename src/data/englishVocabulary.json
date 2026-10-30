@@ -1177,6 +1177,988 @@
     "emoji": "🌙",
     "pronunciation": "naɪt",
     "source": "curated-starter"
+  },
+  {
+    "id": "letter-a",
+    "english": "A",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-b",
+    "english": "B",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-c",
+    "english": "C",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-d",
+    "english": "D",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-e",
+    "english": "E",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-f",
+    "english": "F",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-g",
+    "english": "G",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-h",
+    "english": "H",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-i",
+    "english": "I",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-j",
+    "english": "J",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-k",
+    "english": "K",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-l",
+    "english": "L",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-m",
+    "english": "M",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-n",
+    "english": "N",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-o",
+    "english": "O",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-p",
+    "english": "P",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-q",
+    "english": "Q",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-r",
+    "english": "R",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-s",
+    "english": "S",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-t",
+    "english": "T",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-u",
+    "english": "U",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-v",
+    "english": "V",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-w",
+    "english": "W",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-x",
+    "english": "X",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-y",
+    "english": "Y",
+    "category": "Alphabet",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "letter-z",
+    "english": "Z",
+    "category": "Alphabet",
+    "pronunciation": "zɛd",
+    "icon": "Type",
+    "emoji": "🔤"
+  },
+  {
+    "id": "number-1",
+    "english": "1",
+    "category": "Numbers",
+    "pronunciation": "One",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-2",
+    "english": "2",
+    "category": "Numbers",
+    "pronunciation": "Two",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-3",
+    "english": "3",
+    "category": "Numbers",
+    "pronunciation": "Three",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-4",
+    "english": "4",
+    "category": "Numbers",
+    "pronunciation": "Four",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-5",
+    "english": "5",
+    "category": "Numbers",
+    "pronunciation": "Five",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-6",
+    "english": "6",
+    "category": "Numbers",
+    "pronunciation": "Six",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-7",
+    "english": "7",
+    "category": "Numbers",
+    "pronunciation": "Seven",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-8",
+    "english": "8",
+    "category": "Numbers",
+    "pronunciation": "Eight",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-9",
+    "english": "9",
+    "category": "Numbers",
+    "pronunciation": "Nine",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-10",
+    "english": "10",
+    "category": "Numbers",
+    "pronunciation": "Ten",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-11",
+    "english": "11",
+    "category": "Numbers",
+    "pronunciation": "Eleven",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-12",
+    "english": "12",
+    "category": "Numbers",
+    "pronunciation": "Twelve",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-13",
+    "english": "13",
+    "category": "Numbers",
+    "pronunciation": "Thirteen",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-14",
+    "english": "14",
+    "category": "Numbers",
+    "pronunciation": "Fourteen",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-15",
+    "english": "15",
+    "category": "Numbers",
+    "pronunciation": "Fifteen",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-16",
+    "english": "16",
+    "category": "Numbers",
+    "pronunciation": "Sixteen",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-17",
+    "english": "17",
+    "category": "Numbers",
+    "pronunciation": "Seventeen",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-18",
+    "english": "18",
+    "category": "Numbers",
+    "pronunciation": "Eighteen",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-19",
+    "english": "19",
+    "category": "Numbers",
+    "pronunciation": "Nineteen",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-20",
+    "english": "20",
+    "category": "Numbers",
+    "pronunciation": "Twenty",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-21",
+    "english": "21",
+    "category": "Numbers",
+    "pronunciation": "Twenty-one",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-22",
+    "english": "22",
+    "category": "Numbers",
+    "pronunciation": "Twenty-two",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-23",
+    "english": "23",
+    "category": "Numbers",
+    "pronunciation": "Twenty-three",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-24",
+    "english": "24",
+    "category": "Numbers",
+    "pronunciation": "Twenty-four",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-25",
+    "english": "25",
+    "category": "Numbers",
+    "pronunciation": "Twenty-five",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-26",
+    "english": "26",
+    "category": "Numbers",
+    "pronunciation": "Twenty-six",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-27",
+    "english": "27",
+    "category": "Numbers",
+    "pronunciation": "Twenty-seven",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-28",
+    "english": "28",
+    "category": "Numbers",
+    "pronunciation": "Twenty-eight",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-29",
+    "english": "29",
+    "category": "Numbers",
+    "pronunciation": "Twenty-nine",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "number-30",
+    "english": "30",
+    "category": "Numbers",
+    "pronunciation": "Thirty",
+    "icon": "Hash",
+    "emoji": "🔢"
+  },
+  {
+    "id": "body-neck",
+    "english": "Neck",
+    "pronunciation": "nɛk",
+    "icon": "Heart",
+    "emoji": "👤",
+    "category": "Body"
+  },
+  {
+    "id": "body-hair",
+    "english": "Hair",
+    "pronunciation": "hɛər",
+    "icon": "Sparkles",
+    "emoji": "💇🏾",
+    "category": "Body"
+  },
+  {
+    "id": "body-teeth",
+    "english": "Teeth",
+    "pronunciation": "tiːθ",
+    "icon": "Smile",
+    "emoji": "🦷",
+    "category": "Body"
+  },
+  {
+    "id": "body-tongue",
+    "english": "Tongue",
+    "pronunciation": "tʌŋ",
+    "icon": "Smile",
+    "emoji": "👅",
+    "category": "Body"
+  },
+  {
+    "id": "body-knee",
+    "english": "Knee",
+    "pronunciation": "niː",
+    "icon": "Activity",
+    "emoji": "🦵",
+    "category": "Body"
+  },
+  {
+    "id": "body-shoulder",
+    "english": "Shoulder",
+    "pronunciation": "ˈʃoʊldər",
+    "icon": "User",
+    "emoji": "💪",
+    "category": "Body"
+  },
+  {
+    "id": "body-stomach",
+    "english": "Stomach",
+    "pronunciation": "ˈstʌmək",
+    "icon": "Circle",
+    "emoji": "🫃",
+    "category": "Body"
+  },
+  {
+    "id": "body-chest",
+    "english": "Chest",
+    "pronunciation": "tʃɛst",
+    "icon": "Shield",
+    "emoji": "🫁",
+    "category": "Body"
+  },
+  {
+    "id": "body-finger",
+    "english": "Finger",
+    "pronunciation": "ˈfɪŋɡər",
+    "icon": "Hand",
+    "emoji": "☝🏾",
+    "category": "Body"
+  },
+  {
+    "id": "body-toe",
+    "english": "Toe",
+    "pronunciation": "toʊ",
+    "icon": "Footprints",
+    "emoji": "🦶",
+    "category": "Body"
+  },
+  {
+    "id": "body-back",
+    "english": "Back",
+    "pronunciation": "bæk",
+    "icon": "User",
+    "emoji": "🧍",
+    "category": "Body"
+  },
+  {
+    "id": "body-skin",
+    "english": "Skin",
+    "pronunciation": "skɪn",
+    "icon": "Layers",
+    "emoji": "🏽",
+    "category": "Body"
+  },
+  {
+    "id": "food-milk",
+    "english": "Milk",
+    "pronunciation": "mɪlk",
+    "icon": "Coffee",
+    "emoji": "🥛",
+    "category": "Food"
+  },
+  {
+    "id": "food-tea",
+    "english": "Tea",
+    "pronunciation": "tiː",
+    "icon": "Coffee",
+    "emoji": "🍵",
+    "category": "Food"
+  },
+  {
+    "id": "food-coffee",
+    "english": "Coffee",
+    "pronunciation": "ˈkɒfi",
+    "icon": "Coffee",
+    "emoji": "☕",
+    "category": "Food"
+  },
+  {
+    "id": "food-juice",
+    "english": "Juice",
+    "pronunciation": "dʒuːs",
+    "icon": "Wine",
+    "emoji": "🧃",
+    "category": "Food"
+  },
+  {
+    "id": "food-palm-wine",
+    "english": "Palm wine",
+    "pronunciation": "pɑːm waɪn",
+    "icon": "Wine",
+    "emoji": "🍶",
+    "category": "Food"
+  },
+  {
+    "id": "food-cassava",
+    "english": "Cassava",
+    "pronunciation": "kəˈsɑːvə",
+    "icon": "Apple",
+    "emoji": "🥔",
+    "category": "Food"
+  },
+  {
+    "id": "food-beans",
+    "english": "Beans",
+    "pronunciation": "biːnz",
+    "icon": "CircleDot",
+    "emoji": "🫘",
+    "category": "Food"
+  },
+  {
+    "id": "food-corn",
+    "english": "Corn",
+    "pronunciation": "kɔːrn",
+    "icon": "Wheat",
+    "emoji": "🌽",
+    "category": "Food"
+  },
+  {
+    "id": "food-orange",
+    "english": "Orange",
+    "pronunciation": "ˈɒrɪndʒ",
+    "icon": "Sun",
+    "emoji": "🍊",
+    "category": "Food"
+  },
+  {
+    "id": "food-tomato",
+    "english": "Tomato",
+    "pronunciation": "təˈmɑːtoʊ",
+    "icon": "Apple",
+    "emoji": "🍅",
+    "category": "Food"
+  },
+  {
+    "id": "food-onion",
+    "english": "Onion",
+    "pronunciation": "ˈʌnjən",
+    "icon": "Circle",
+    "emoji": "🧅",
+    "category": "Food"
+  },
+  {
+    "id": "food-chicken",
+    "english": "Chicken",
+    "pronunciation": "ˈtʃɪkɪn",
+    "icon": "Drumstick",
+    "emoji": "🍗",
+    "category": "Food"
+  },
+  {
+    "id": "home-cup",
+    "english": "Cup",
+    "pronunciation": "kʌp",
+    "icon": "Coffee",
+    "emoji": "🥤",
+    "category": "Home"
+  },
+  {
+    "id": "home-plate",
+    "english": "Plate",
+    "pronunciation": "pleɪt",
+    "icon": "Disc",
+    "emoji": "🍽️",
+    "category": "Home"
+  },
+  {
+    "id": "home-spoon",
+    "english": "Spoon",
+    "pronunciation": "spuːn",
+    "icon": "Utensils",
+    "emoji": "🥄",
+    "category": "Home"
+  },
+  {
+    "id": "home-knife",
+    "english": "Knife",
+    "pronunciation": "naɪf",
+    "icon": "Scissors",
+    "emoji": "🔪",
+    "category": "Home"
+  },
+  {
+    "id": "home-pot",
+    "english": "Pot",
+    "pronunciation": "pɒt",
+    "icon": "Soup",
+    "emoji": "🍲",
+    "category": "Home"
+  },
+  {
+    "id": "home-broom",
+    "english": "Broom",
+    "pronunciation": "bruːm",
+    "icon": "Brush",
+    "emoji": "🧹",
+    "category": "Home"
+  },
+  {
+    "id": "home-mirror",
+    "english": "Mirror",
+    "pronunciation": "ˈmɪrər",
+    "icon": "Square",
+    "emoji": "🪞",
+    "category": "Home"
+  },
+  {
+    "id": "home-clock",
+    "english": "Clock",
+    "pronunciation": "klɒk",
+    "icon": "Clock",
+    "emoji": "⏰",
+    "category": "Home"
+  },
+  {
+    "id": "home-bucket",
+    "english": "Bucket",
+    "pronunciation": "ˈbʌkɪt",
+    "icon": "Box",
+    "emoji": "🪣",
+    "category": "Home"
+  },
+  {
+    "id": "home-soap",
+    "english": "Soap",
+    "pronunciation": "soʊp",
+    "icon": "Sparkles",
+    "emoji": "🧼",
+    "category": "Home"
+  },
+  {
+    "id": "home-pillow",
+    "english": "Pillow",
+    "pronunciation": "ˈpɪloʊ",
+    "icon": "Square",
+    "emoji": "🛏️",
+    "category": "Home"
+  },
+  {
+    "id": "home-blanket",
+    "english": "Blanket",
+    "pronunciation": "ˈblæŋkɪt",
+    "icon": "Layers",
+    "emoji": "🛋️",
+    "category": "Home"
+  },
+  {
+    "id": "home-towel",
+    "english": "Towel",
+    "pronunciation": "ˈtaʊəl",
+    "icon": "Layers",
+    "emoji": "🧖",
+    "category": "Home"
+  },
+  {
+    "id": "home-mat",
+    "english": "Mat",
+    "pronunciation": "mæt",
+    "icon": "Layers",
+    "emoji": "🧘",
+    "category": "Home"
+  },
+  {
+    "id": "animal-cow",
+    "english": "Cow",
+    "pronunciation": "kaʊ",
+    "icon": "Activity",
+    "emoji": "🐄",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-sheep",
+    "english": "Sheep",
+    "pronunciation": "ʃiːp",
+    "icon": "Activity",
+    "emoji": "🐑",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-horse",
+    "english": "Horse",
+    "pronunciation": "hɔːrs",
+    "icon": "Activity",
+    "emoji": "🐎",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-lion",
+    "english": "Lion",
+    "pronunciation": "ˈlaɪən",
+    "icon": "Activity",
+    "emoji": "🦁",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-elephant",
+    "english": "Elephant",
+    "pronunciation": "ˈɛlɪfənt",
+    "icon": "Activity",
+    "emoji": "🐘",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-monkey",
+    "english": "Monkey",
+    "pronunciation": "ˈmʌŋki",
+    "icon": "Activity",
+    "emoji": "🐒",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-snake",
+    "english": "Snake",
+    "pronunciation": "sneɪk",
+    "icon": "Activity",
+    "emoji": "🐍",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-pig",
+    "english": "Pig",
+    "pronunciation": "pɪɡ",
+    "icon": "Activity",
+    "emoji": "🐖",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-duck",
+    "english": "Duck",
+    "pronunciation": "dʌk",
+    "icon": "Bird",
+    "emoji": "🦆",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-rabbit",
+    "english": "Rabbit",
+    "pronunciation": "ˈræbɪt",
+    "icon": "Activity",
+    "emoji": "🐇",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-lizard",
+    "english": "Lizard",
+    "pronunciation": "ˈlɪzərd",
+    "icon": "Activity",
+    "emoji": "🦎",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-rat",
+    "english": "Rat",
+    "pronunciation": "ræt",
+    "icon": "Activity",
+    "emoji": "🐀",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-frog",
+    "english": "Frog",
+    "pronunciation": "frɒɡ",
+    "icon": "Activity",
+    "emoji": "🐸",
+    "category": "Animals"
+  },
+  {
+    "id": "animal-tortoise",
+    "english": "Tortoise",
+    "pronunciation": "ˈtɔːrtəs",
+    "icon": "Activity",
+    "emoji": "🐢",
+    "category": "Animals"
+  },
+  {
+    "id": "family-son",
+    "english": "Son",
+    "pronunciation": "sʌn",
+    "icon": "User",
+    "emoji": "👦🏾",
+    "category": "Family"
+  },
+  {
+    "id": "family-daughter",
+    "english": "Daughter",
+    "pronunciation": "ˈdɔːtər",
+    "icon": "User",
+    "emoji": "👧🏾",
+    "category": "Family"
+  },
+  {
+    "id": "family-husband",
+    "english": "Husband",
+    "pronunciation": "ˈhʌzbənd",
+    "icon": "User",
+    "emoji": "👨🏾",
+    "category": "Family"
+  },
+  {
+    "id": "family-wife",
+    "english": "Wife",
+    "pronunciation": "waɪf",
+    "icon": "User",
+    "emoji": "👩🏾",
+    "category": "Family"
+  },
+  {
+    "id": "family-uncle",
+    "english": "Uncle",
+    "pronunciation": "ˈʌŋkəl",
+    "icon": "User",
+    "emoji": "🧔🏾",
+    "category": "Family"
+  },
+  {
+    "id": "family-aunt",
+    "english": "Aunt",
+    "pronunciation": "ænt",
+    "icon": "User",
+    "emoji": "👩🏾",
+    "category": "Family"
+  },
+  {
+    "id": "family-cousin",
+    "english": "Cousin",
+    "pronunciation": "ˈkʌzən",
+    "icon": "Users",
+    "emoji": "🧑🏾",
+    "category": "Family"
+  },
+  {
+    "id": "family-parents",
+    "english": "Parents",
+    "pronunciation": "ˈpɛərənts",
+    "icon": "Users",
+    "emoji": "👨‍👩‍👦",
+    "category": "Family"
+  },
+  {
+    "id": "phrase-good-night",
+    "english": "Good night",
+    "pronunciation": "ɡʊd naɪt",
+    "icon": "Moon",
+    "emoji": "🌙",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-i-am-fine",
+    "english": "I am fine",
+    "pronunciation": "aɪ æm faɪn",
+    "icon": "Smile",
+    "emoji": "😊",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-excuse-me",
+    "english": "Excuse me",
+    "pronunciation": "ɪkˈskjuːz miː",
+    "icon": "MessageCircle",
+    "emoji": "🙋🏾",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-i-am-sorry",
+    "english": "I am sorry",
+    "pronunciation": "aɪ æm ˈsɒri",
+    "icon": "Heart",
+    "emoji": "🙏🏾",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-well-done",
+    "english": "Well done",
+    "pronunciation": "wɛl dʌn",
+    "icon": "ThumbsUp",
+    "emoji": "👏🏾",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-see-you-later",
+    "english": "See you later",
+    "pronunciation": "siː juː ˈleɪtər",
+    "icon": "Clock",
+    "emoji": "👋🏾",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-how-much",
+    "english": "How much?",
+    "pronunciation": "haʊ mʌtʃ",
+    "icon": "DollarSign",
+    "emoji": "💰",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-help-me",
+    "english": "Help me",
+    "pronunciation": "hɛlp miː",
+    "icon": "AlertCircle",
+    "emoji": "🆘",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-congratulations",
+    "english": "Congratulations",
+    "pronunciation": "kənˌɡrætʃʊˈleɪʃənz",
+    "icon": "Award",
+    "emoji": "🎉",
+    "category": "Daily expressions"
+  },
+  {
+    "id": "phrase-safe-journey",
+    "english": "Safe journey",
+    "pronunciation": "seɪf ˈdʒɜːrni",
+    "icon": "Navigation",
+    "emoji": "🚗",
+    "category": "Daily expressions"
   }
 ]
-

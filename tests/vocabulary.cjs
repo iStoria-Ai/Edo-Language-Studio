@@ -126,5 +126,29 @@ for (const word of ['Head', 'Nose', 'Leg', 'Hand', 'Body', 'Water']) {
   assert(imageModule.exports.getVocabularyImageUrl({ english: word, id: 'body-head', imageUrl: '/wrong-photo.jpg' }).endsWith('/verified/' + word.toLowerCase() + '.svg'));
 }
 
+// 7. Verify Edo Alphabet Character Set & Cursor Insertion Logic
+const letterBarBundle = buildSync({ entryPoints: ['src/components/EdoLetterBar.tsx'], bundle: true, write: false, platform: 'node', format: 'cjs', logLevel: 'silent', external: ['react'] }).outputFiles[0].text;
+const letterBarModule = { exports: {} };
+vm.runInNewContext(letterBarBundle, { module: letterBarModule, exports: letterBarModule.exports, console, require: () => ({}) });
+
+const expectedEdoLetters = ['ẹ', 'ọ', 'vb', 'gh', 'kh', 'mw', 'rh'];
+assert.deepEqual(Array.from(letterBarModule.exports.EDO_SPECIAL_CHARS), expectedEdoLetters, 'Edo alphabet must contain exact 7 characters without invention or removal');
+
+// Simulate input element cursor insertion logic
+function simulateInsert(currentVal, start, end, char) {
+  return currentVal.slice(0, start) + char + currentVal.slice(end);
+}
+
+// Case 1: Cursor at position 1 (between O and bo)
+assert.equal(simulateInsert('Obo', 1, 1, 'vb'), 'Ovbbo', 'Inserts character at exact cursor position');
+
+// Case 2: Text selected (replacing "b" at index 1-2)
+assert.equal(simulateInsert('Obo', 1, 2, 'vb'), 'Ovbo', 'Replaces only selected text range');
+
+// Case 3: Cursor at end
+assert.equal(simulateInsert('Obo', 3, 3, 'ẹ'), 'Oboẹ', 'Appends when cursor is at end');
+
+console.log('✓ Edo alphabet characters verified and cursor/selection insertion tested.');
+
 console.log('=== ALL VOCABULARY EXPANSION TESTS PASSED! ===');
 

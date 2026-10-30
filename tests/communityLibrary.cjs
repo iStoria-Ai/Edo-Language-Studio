@@ -6,10 +6,10 @@ const bundle = buildSync({ entryPoints: ['src/services/communityLibrary.ts'], bu
 function device(storage = new Map(), request = async () => { throw Error('offline'); }) {
   const module = { exports: {} }, navigator = { onLine: true };
   const context = { module, exports: module.exports, console, crypto: webcrypto, TextEncoder, Uint8Array, AbortSignal, atob, btoa, navigator,
-    localStorage: { getItem: key => storage.get(key) || null }, fetch: (...args) => request(...args),
+    localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) }, fetch: (...args) => request(...args),
     require: name => {
       if (name === '@capacitor/core') return { Capacitor: { isNativePlatform: () => false } };
-      if (name === '@capacitor/preferences') return { Preferences: { get: async ({ key }) => ({ value: storage.get(key) || null }), set: async ({ key, value }) => storage.set(key, value) } };
+      if (name === '@capacitor/preferences') return { Preferences: { get: async ({ key }) => ({ value: storage.get(key) || null }), set: async ({ key, value }) => storage.set(key, value), remove: async ({ key }) => { storage.delete(key); } } };
       throw Error(name);
     } };
   vm.runInNewContext(bundle, context);
@@ -224,6 +224,212 @@ const shared = { id: 'cloud-rec-a', recordingId: 'rec-a', sourceLessonId: 'word-
   staleEdit = true; await editing.api.queueCommunityEdit({ ...shared, version: 2 }, { edoText: 'stale draft' });
   await editing.api.syncCommunityEdits(); await assert.rejects(editing.api.ensureCommunityEditSynced('meta-a'), /Reopen the current lesson/);
   await editing.api.syncCommunityEdits(); assert.equal(sentEdits, 2, 'Conflicting revisions are preserved without repeated overwrite attempts');
+
+  // Test complete voice replacement and cache cleanup
+  const replaceStorage = new Map();
+  replaceStorage.set('edo_community_audio_audio-old', 'old-audio-data');
+  let streamFail = false;
+  const replacing = device(replaceStorage, async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    if (payload.action === 'update_contribution') {
+      assert.equal(payload.metadataFileId, 'meta-replace');
+      assert.equal(payload.audioBase64, 'cmVwbGFjZW1lbnQ=');
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          verified: true,
+          version: 3,
+          metadataFileId: 'meta-replace',
+          audioFileId: 'audio-new',
+          previousAudioFileId: 'audio-old'
+        })
+      };
+    }
+    if (payload.action === 'stream_audio') {
+      if (streamFail) return { ok: true, json: async () => ({ status: 'error', message: 'Failed to stream' }) };
+      return { ok: true, json: async () => ({ status: 'success', audioDataUrl: 'data:audio/wav;base64,cmVwbGFjZW1lbnQ=' }) };
+    }
+    throw Error(payload.action);
+  });
+
+  const replaceTarget = { ...shared, cloudMetadataFileId: 'meta-replace', cloudAudioFileId: 'audio-old', version: 2 };
+  await replacing.api.queueCommunityEdit(replaceTarget, { audioDataUrl: 'data:audio/wav;base64,cmVwbGFjZW1lbnQ=', durationSec: 2 });
+
+  // If streaming verification fails, draft is preserved and old cached audio is NOT removed
+  streamFail = true;
+  await assert.rejects(replacing.api.syncCommunityEdits(), /Voice verification is pending/);
+  assert(replaceStorage.has('edo_community_audio_audio-old'), 'Old audio cache preserved on verification failure');
+
+  // When verification succeeds, old cached audio is removed and new audio is cached
+  streamFail = false;
+  await replacing.api.syncCommunityEdits();
+  await replacing.api.ensureCommunityEditSynced('meta-replace');
+  assert(!replaceStorage.has('edo_community_audio_audio-old'), 'Obsolete old audio cache removed after replacement');
+  assert.equal(replaceStorage.get('edo_community_audio_audio-new'), 'data:audio/wav;base64,cmVwbGFjZW1lbnQ=', 'New audio cached');
+
+  // Test getHelpOthersEligibleEntries: Single authoritative source of truth for Help Others
+  {
+    const sampleEntry = { id: 'sample-1', english: 'Hand', isSampleData: true, cloudMetadataFileId: 'meta-sample', hasAudio: true };
+    const localNoMeta = { id: 'local-1', english: 'Water', isSampleData: false, status: 'needs_writing', hasAudio: true };
+    const completeItem = { id: 'comp-1', english: 'Eye', edoText: 'Aro', hasAudio: true, isSampleData: false, cloudMetadataFileId: 'meta-comp' };
+    const lockedItem = { id: 'lock-1', english: 'Nose', hasAudio: true, isSampleData: false, cloudMetadataFileId: 'meta-lock', reviewStatus: 'approved_locked' };
+    const tombItem = { id: 'tomb-1', english: 'Ear', hasAudio: true, isSampleData: false, cloudMetadataFileId: 'meta-tomb' };
+    
+    // Test: None of the above are eligible -> must return 0
+    const zeroRes = a.api.getHelpOthersEligibleEntries([sampleEntry, localNoMeta, completeItem, lockedItem, tombItem], ['meta-tomb']);
+    assert.equal(zeroRes.totalCount, 0, 'No false positives: sample, unverified local, completed, locked, and tombstoned must all be excluded');
+    assert.equal(zeroRes.needsWritingList.length, 0);
+    assert.equal(zeroRes.needsAudioList.length, 0);
+
+    // Test: 3 genuinely eligible items -> must return exactly 3
+    const item1 = { id: 'help-1', recordingId: 'rec-h1', english: 'Leg', isSampleData: false, cloudMetadataFileId: 'meta-h1', hasAudio: true, isCommunity: true }; // needs writing
+    const item2 = { id: 'help-2', recordingId: 'rec-h2', english: 'Arm', isSampleData: false, cloudMetadataFileId: 'meta-h2', hasAudio: true, isCommunity: true }; // needs writing
+    const item3 = { id: 'help-3', recordingId: 'rec-h3', english: 'Head', edoText: 'Uhunmwun', isSampleData: false, cloudMetadataFileId: 'meta-h3', hasAudio: false, isCommunity: true }; // needs audio
+    
+    const threeRes = a.api.getHelpOthersEligibleEntries([item1, item2, item3, sampleEntry, localNoMeta, completeItem]);
+    assert.equal(threeRes.totalCount, 3, 'When 3 eligible items exist, totalCount must be 3');
+    assert.equal(threeRes.needsWritingList.length, 2, '2 items need writing (Leg, Arm)');
+    assert.equal(threeRes.needsAudioList.length, 1, '1 item needs audio (Head)');
+    assert.equal(threeRes.allEligible.length, 3);
+
+    // Test: When item1 has a pending local submission, it is immediately excluded from eligible list
+    const pendingRes = a.api.getHelpOthersEligibleEntries([item1, item2, item3], [], new Set(['meta-h1']));
+    assert.equal(pendingRes.totalCount, 2, 'Pending local submission immediately reduces eligible count to 2');
+    assert.equal(pendingRes.needsWritingList.length, 1);
+    assert.equal(pendingRes.needsWritingList[0].english, 'Arm');
+  }
+
+  // Test readPendingCloudEdits, retryPendingCloudEdit, and draft deduplication
+  {
+    const editTestStorage = new Map();
+    let networkOnline = true;
+    const testDev = device(editTestStorage, async (_url, options) => {
+      if (!networkOnline) throw new Error('Network offline');
+      const payload = JSON.parse(options.body);
+      if (payload.action === 'update_contribution') {
+        return {
+          ok: true,
+          json: async () => ({
+            status: 'success',
+            verified: true,
+            version: 4,
+            metadataFileId: payload.metadataFileId
+          })
+        };
+      }
+      throw new Error('Unexpected action: ' + payload.action);
+    });
+
+    const targetLesson = { id: 'cloud-test-pending', english: 'Water', edoText: 'Ame', cloudMetadataFileId: 'meta-pending-1', version: 3 };
+
+    // 1. Queue an edit
+    await testDev.api.queueCommunityEdit(targetLesson, { edoText: 'Ame Updated' });
+    let drafts = await testDev.api.readPendingCloudEdits();
+    assert.equal(drafts.length, 1);
+    assert.equal(drafts[0].metadataFileId, 'meta-pending-1');
+    assert.equal(drafts[0].updates.edoText, 'Ame Updated');
+
+    // 2. Queueing a second edit for the same lesson updates in-place without duplicate drafts
+    await testDev.api.queueCommunityEdit(targetLesson, { edoText: 'Ame Final' });
+    drafts = await testDev.api.readPendingCloudEdits();
+    assert.equal(drafts.length, 1, 'Drafts for same lesson are deduplicated');
+    assert.equal(drafts[0].updates.edoText, 'Ame Final');
+
+    // 3. Network fails during sync: marks lastAttemptFailed, draft preserved in storage
+    networkOnline = false;
+    await assert.rejects(testDev.api.syncCommunityEdits(), /Network offline/);
+    drafts = await testDev.api.readPendingCloudEdits();
+    assert.equal(drafts.length, 1, 'Draft survives network failure');
+    assert.equal(drafts[0].lastAttemptFailed, true, 'Draft marked as failed attempt for card UI');
+
+    // 4. Retry pending edit when back online
+    networkOnline = true;
+    await testDev.api.retryPendingCloudEdit('meta-pending-1');
+    drafts = await testDev.api.readPendingCloudEdits();
+    assert.equal(drafts.length, 0, 'On successful sync, draft is cleaned up and card is restored');
+  }
+
+  // Test Session-Based Audio Caching and In-flight Request Deduplication
+  {
+    const audioStorage = new Map();
+    let streamCalls = 0;
+    const audioDev = device(audioStorage, async (_url, options) => {
+      const payload = JSON.parse(options.body);
+      if (payload.action === 'stream_audio') {
+        streamCalls++;
+        return { ok: true, json: async () => ({ status: 'success', audioDataUrl: 'data:audio/wav;base64,U2Vzc2lvbkF1ZGlv' }) };
+      }
+      throw new Error(payload.action);
+    });
+
+    const testItem = { id: 'cloud-cache-test', cloudAudioFileId: 'audio-session-1', isCommunity: true, playbackPermission: 'granted', hasAudio: true };
+
+    // 1. First playback: downloads recording from gateway
+    const firstAudio = await audioDev.api.getCommunityAudio(testItem);
+    assert.equal(firstAudio, 'data:audio/wav;base64,U2Vzc2lvbkF1ZGlv');
+    assert.equal(streamCalls, 1, 'First playback fetches audio from gateway');
+
+    // 2. Second playback: immediately serves from in-memory session cache without network request
+    const secondAudio = await audioDev.api.getCommunityAudio(testItem);
+    assert.equal(secondAudio, 'data:audio/wav;base64,U2Vzc2lvbkF1ZGlv');
+    assert.equal(streamCalls, 1, 'Second playback uses in-memory session cache (0 extra network calls)');
+
+    // 3. In-flight request deduplication: concurrent calls share a single network request
+    const newTarget = { id: 'cloud-concurrent', cloudAudioFileId: 'audio-session-concurrent', isCommunity: true, playbackPermission: 'granted', hasAudio: true };
+    const [concurrent1, concurrent2] = await Promise.all([
+      audioDev.api.getCommunityAudio(newTarget),
+      audioDev.api.getCommunityAudio(newTarget)
+    ]);
+    assert.equal(concurrent1, concurrent2);
+    assert.equal(streamCalls, 2, 'Concurrent requests for the same audio share a single network stream');
+  }
+
+  // Test Teach Edo Question Shuffling, Non-repeating rotation, and Skip-to-end
+  {
+    const q1 = { id: 'q-1', english: 'Water' };
+    const q2 = { id: 'q-2', english: 'Hand' };
+    const q3 = { id: 'q-3', english: 'House' };
+    const q4 = { id: 'q-4', english: 'Tree' };
+    const allQ = [q1, q2, q3, q4];
+
+    // Shuffle produces a permutation with all elements
+    const shuffled = a.api.shuffleQuestions(allQ);
+    assert.equal(shuffled.length, 4);
+    assert(shuffled.some(item => item.id === 'q-1'));
+    assert(shuffled.some(item => item.id === 'q-4'));
+
+    // Answered check
+    const answered = new Set(['q-1', 'english:hand']);
+    assert.equal(a.api.isQuestionAnswered(q1, answered), true);
+    assert.equal(a.api.isQuestionAnswered(q2, answered), true);
+    assert.equal(a.api.isQuestionAnswered(q3, answered), false);
+    assert.equal(a.api.isQuestionAnswered(q4, answered), false);
+
+    // Curated Alphabet & Numbers session sequencing
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l => ({ id: `letter-${l.toLowerCase()}`, english: l, category: 'Alphabet' }));
+    const numbers = Array.from({ length: 30 }, (_, i) => ({ id: `number-${i + 1}`, english: String(i + 1), category: 'Numbers' }));
+    const general = Array.from({ length: 40 }, (_, i) => ({ id: `gen-${i + 1}`, english: `Word${i + 1}`, category: 'Food' }));
+    const allCatalog = [...letters, ...numbers, ...general];
+
+    const curatedQueue = a.api.buildCuratedSessionQueue(allCatalog, new Set(['letter-b', 'number-2']));
+    assert.equal(curatedQueue.length, allCatalog.length - 2, 'Answered letter B and number 2 must be excluded');
+
+    // Find the first alphabet block
+    const firstAlphaIdx = curatedQueue.findIndex(q => q.category === 'Alphabet');
+    assert(firstAlphaIdx >= 0, 'Alphabet block must be present');
+    // Verify consecutive alphabet sequence in chunk of ~10 (A through J, with B skipped)
+    assert.equal(curatedQueue[firstAlphaIdx].english, 'A');
+    assert.equal(curatedQueue[firstAlphaIdx + 1].english, 'C'); // B was answered!
+    assert.equal(curatedQueue[firstAlphaIdx + 2].english, 'D');
+
+    // Find first number block
+    const firstNumIdx = curatedQueue.findIndex(q => q.category === 'Numbers');
+    assert(firstNumIdx >= 0, 'Numbers block must be present');
+    assert.equal(curatedQueue[firstNumIdx].english, '1');
+    assert.equal(curatedQueue[firstNumIdx + 1].english, '3'); // 2 was answered!
+    assert.equal(curatedQueue[firstNumIdx + 2].english, '4');
+  }
 
   console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, automatic section progression, tombstone purging, and synthetic test rejection.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

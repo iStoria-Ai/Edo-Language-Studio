@@ -397,7 +397,7 @@ export async function resetToDefaultData(): Promise<EdoEntry[]> {
   return INITIAL_EDO_ENTRIES;
 }
 
-export function computeStudioStats(entries: EdoEntry[]): StudioStats {
+export function computeStudioStats(entries: EdoEntry[], explicitNeedsHelpCount?: number): StudioStats {
   // Only real contributions (!isSampleData) that have actual recorded audio or submitted spelling
   const realEntries = entries.filter(
     (e) => !e.isSampleData && (e.hasAudio || Boolean(e.edoText && e.edoText.trim()) || e.status === 'awaiting_review')
@@ -428,9 +428,10 @@ export function computeStudioStats(entries: EdoEntry[]): StudioStats {
 
   // Recalculate Review Queue and Needs Help numbers from actual contribution statuses
   const reviewQueueCount = realEntries.filter((e) => e.status === 'awaiting_review').length;
-  const needsHelpCount = entries.filter(
-    (e) => !e.isSampleData && (e.status === 'needs_writing' || e.status === 'needs_audio')
-  ).length;
+  const needsHelpCount =
+    explicitNeedsHelpCount !== undefined
+      ? explicitNeedsHelpCount
+      : entries.filter((e) => !e.isSampleData && (e.status === 'needs_writing' || e.status === 'needs_audio')).length;
 
   return {
     wordsCollected,

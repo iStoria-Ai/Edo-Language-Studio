@@ -129,7 +129,7 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
           tombstones[qId] = new Date().toISOString();
         }
       }
-      scriptProperties.set('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
+      scriptProperties.set('COMPLETED_QUESTIONS_V1', JSON.stringify(prunedCompleted));
       scriptProperties.set('DELETED_RECORDS_V1', JSON.stringify(tombstones));
 
       return {
@@ -138,7 +138,7 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
         checkedAt: new Date().toISOString(),
         items: activeItems,
         tombstones: Object.keys(tombstones),
-        answeredQuestionIds: Object.keys(completed)
+        answeredQuestionIds: Object.keys(prunedCompleted)
       };
     }
 
@@ -308,12 +308,12 @@ function createTestDevice(storage = new Map(), mockFetch = async () => { throw n
   assert.equal(finalLibraryCards.length, 0, 'Old local copy cannot restore deleted lesson into public Library');
   console.log('✓ Old local storage copies strictly prevented from repopulating the Library.');
 
-  // --- Step 8: Confirm answered English word stays retired ---
-  console.log('--- Step 8: Confirm answered English word stays retired ---');
-  assert(refreshedSnapshotA.answeredQuestionIds.includes('word-tree'), 'Answered history survives deletion');
+  // --- Step 8: Confirm deleted lesson question returns to Teach Edo pool when no active contribution remains ---
+  console.log('--- Step 8: Confirm deleted lesson question returns to Teach Edo pool ---');
+  assert(!refreshedSnapshotA.answeredQuestionIds.includes('word-tree'), 'Deleted lesson question must return to pool when no active copy remains');
   const answeredIds = new Set(refreshedSnapshotA.answeredQuestionIds);
-  assert(answeredIds.has('word-tree'), 'Deleted files do not retire answered history');
-  console.log('✓ "Tree" remains excluded from Teach Edo questions.');
+  assert(!answeredIds.has('word-tree'), 'Deleted files allow question to re-enter Teach Edo');
+  console.log('✓ "Tree" returns to Teach Edo questions.');
 
   // --- Step 9: Confirm genuine new offline recording survives until uploaded ---
   console.log('--- Step 9: Confirm genuine new offline recording survives ---');

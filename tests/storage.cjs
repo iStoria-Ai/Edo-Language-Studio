@@ -258,5 +258,102 @@ function wav() {
     assert.equal(spokenUtterance.text, word, 'Speech must contain only the displayed English, without category prefixes');
   }
 
+  // Automatic Silence Trimming & Full Spoken Pronunciation Preservation
+  assert.equal(typeof englishAudio.trimPcmChannelData, 'function');
+  assert.equal(typeof englishAudio.encodeWavPcm16, 'function');
+
+  // Test: 1 second of silence, 0.5s of audio tone, 1 second of silence
+  const sampleRate = 16000;
+  const silenceStart = new Float32Array(sampleRate); // 1.0s silence
+  const tone = new Float32Array(Math.floor(sampleRate * 0.5)); // 0.5s tone
+  for (let i = 0; i < tone.length; i++) {
+    tone[i] = Math.sin(2 * Math.PI * 440 * (i / sampleRate)) * 0.5;
+  }
+  const silenceEnd = new Float32Array(sampleRate); // 1.0s silence
+  const combined = new Float32Array(silenceStart.length + tone.length + silenceEnd.length);
+  combined.set(silenceStart, 0);
+  combined.set(tone, silenceStart.length);
+  combined.set(silenceEnd, silenceStart.length + tone.length);
+
+  const trimmedRes = englishAudio.trimPcmChannelData([combined], sampleRate, { leadPaddingMs: 120, trailPaddingMs: 180 });
+  assert.equal(trimmedRes.wasTrimmed, true, 'Silence at start and end must be trimmed');
+  // Expected start: 1.0s - 120ms = ~0.88s (14080 samples)
+  assert(trimmedRes.trimmedStartSample >= Math.floor(sampleRate * 0.85), 'Leading silence trimmed');
+  assert(trimmedRes.trimmedStartSample <= Math.floor(sampleRate * 0.95), 'Safety padding preserved before spoken tone');
+  // Expected end: 1.5s + 180ms = ~1.68s (26880 samples)
+  assert(trimmedRes.trimmedEndSample <= Math.floor(sampleRate * 1.75), 'Trailing silence trimmed');
+  assert(trimmedRes.trimmedEndSample >= Math.floor(sampleRate * 1.60), 'Safety padding preserved after spoken tone');
+
+  // Verify full pronunciation preserved: tone samples inside are intact
+  const trimmedSamples = trimmedRes.channels[0];
+  let maxTrimmedAmp = 0;
+  for (let i = 0; i < trimmedSamples.length; i++) {
+    const a = Math.abs(trimmedSamples[i]);
+    if (a > maxTrimmedAmp) maxTrimmedAmp = a;
+  }
+  assert(maxTrimmedAmp >= 0.45, 'Full spoken audio tone must be preserved');
+
+  // Test encodeWavPcm16 produces valid RIFF WAVE
+  const wavBytes = englishAudio.encodeWavPcm16([trimmedSamples], sampleRate);
+  assert(wavBytes.length > 44, 'WAV has header and data');
+  const wavHeader = Buffer.from(wavBytes.buffer).subarray(0, 12).toString('ascii');
+  assert.equal(wavHeader.slice(0, 4), 'RIFF');
+  assert.equal(wavHeader.slice(8, 12), 'WAVE');
+
+  // Test Real Microphone Recording Scenario: 2s silence/noise -> 1s speech (quiet consonant + vowel) -> 3s silence/noise
+  {
+    const micRate = 16000;
+    const preSilenceSec = 2.0;
+    const speechSec = 1.0;
+    const postSilenceSec = 3.0;
+    const totalSec = preSilenceSec + speechSec + postSilenceSec; // 6.0s
+    const totalSamples = Math.floor(micRate * totalSec);
+    const micData = new Float32Array(totalSamples);
+
+    // Populate with real ambient room noise floor (~0.006 - 0.008 RMS)
+    let seed = 12345;
+    for (let i = 0; i < totalSamples; i++) {
+      seed = (seed * 16807) % 2147483647;
+      const noise = ((seed / 2147483647) - 0.5) * 0.015;
+      micData[i] = noise;
+    }
+
+    // Insert 1.0s speech starting at t=2.0s
+    const speechStartSample = Math.floor(micRate * preSilenceSec); // index 32000
+    const speechEndSample = speechStartSample + Math.floor(micRate * speechSec); // index 48000
+    for (let i = speechStartSample; i < speechEndSample; i++) {
+      const t = (i - speechStartSample) / micRate;
+      let speechVal = 0;
+      if (t < 0.15) {
+        // Initial quiet fricative consonant ('s', 'kh', 'vb'): lower amplitude ~0.035
+        speechVal = Math.sin(2 * Math.PI * 1800 * t) * 0.035;
+      } else {
+        // Spoken vowel / syllable
+        speechVal = Math.sin(2 * Math.PI * 250 * t) * 0.40;
+      }
+      micData[i] += speechVal;
+    }
+
+    const micTrimRes = englishAudio.trimPcmChannelData([micData], micRate, { leadPaddingMs: 150, trailPaddingMs: 200 });
+    assert.equal(micTrimRes.wasTrimmed, true, 'Real 6-second recording with 2s start and 3s end silence must be trimmed');
+    assert.equal(micTrimRes.originalDurationSec, 6, 'Original duration must report 6 seconds');
+
+    // Expected trimmed start: ~1.85s (saving the quiet consonant with 150ms lead padding)
+    const expectedStartSec = micTrimRes.trimmedStartSample / micRate;
+    assert(expectedStartSec >= 1.70 && expectedStartSec <= 2.00, `Trimmed start (${expectedStartSec.toFixed(2)}s) must preserve lead padding before speech`);
+
+    // Expected trimmed end: ~3.20s (with 200ms trail padding)
+    const expectedEndSec = micTrimRes.trimmedEndSample / micRate;
+    assert(expectedEndSec >= 3.05 && expectedEndSec <= 3.35, `Trimmed end (${expectedEndSec.toFixed(2)}s) must preserve trailing decay`);
+
+    // Trimmed duration should be ~1.35s (rounded to 1s)
+    assert(micTrimRes.durationSec >= 1 && micTrimRes.durationSec <= 2, `Trimmed duration (${micTrimRes.durationSec}s) is significantly shorter than 6s`);
+
+    // Confirm initial quiet consonant was NOT cut off
+    const trimmedPcm = micTrimRes.channels[0];
+    const consonantSampleIndex = Math.floor(micRate * (preSilenceSec + 0.05)) - micTrimRes.trimmedStartSample;
+    assert(consonantSampleIndex > 0 && consonantSampleIndex < trimmedPcm.length, 'Initial consonant region must be inside trimmed audio');
+  }
+
   console.log('PASS: legacy preservation; stable IDs; original formats/bytes; independent permissions; persistent/idempotent queue; backup verification; additive import; duplicate/conflict protection; fresh restore; offline playback source; storage failure atomicity; retained audio; corruption rejection; real studio statistics recalculation.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

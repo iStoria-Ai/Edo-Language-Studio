@@ -200,10 +200,10 @@ function readTombstones() {
   return JSON.parse(PropertiesService.getScriptProperties().getProperty('DELETED_RECORDS_V1') || '{}') || {};
 }
 function archiveRevision(folder, file, meta, actor) {
+  // Simplified two-file architecture: Do NOT create standalone history JSON files in Google Drive.
+  // Every lesson maintains strictly one active audio file and one current metadata JSON file.
+  // Optimistic concurrency version numbers and timestamps are preserved and updated in-place.
   const version = Number(meta.version) || 0;
-  const history = folder.createFile(Utilities.newBlob(JSON.stringify(meta, null, 2), 'application/json', meta.lessonId + '_' + meta.recordingId + '_history_v' + version + '_' + Date.now() + '.json'));
-  const revisions = Array.isArray(meta.revisionHistory) ? meta.revisionHistory : [];
-  meta.revisionHistory = revisions.concat([{ version: version, metadataFileId: history.getId(), audioFileId: meta.audioFileId || null, changedAt: new Date().toISOString(), actor: actor.id }]);
   meta.version = version + 1;
   meta.updatedAt = new Date().toISOString();
 }
@@ -350,10 +350,12 @@ function doPost(e) {
     if (!verifiedContributor) {
       return createJsonResponse({
         status: 'error',
-        code: action === 'admin_lock_entry' || action === 'admin_unlock_entry' || action === 'admin_delete_entry' ? 'UNAUTHORIZED_ADMIN' : 'UNAUTHORIZED',
+        code: action === 'admin_lock_entry' || action === 'admin_unlock_entry' || action === 'admin_delete_entry' || action === 'admin_set_approval_code' ? 'UNAUTHORIZED_ADMIN' : 'UNAUTHORIZED',
         message: action === 'admin_lock_entry'
-          ? 'Invalid approval code or administrator token.'
-          : 'Invalid contributor access token or unauthorized action.'
+          ? 'Invalid six-digit approval number or administrator token.'
+          : action === 'admin_set_approval_code'
+            ? 'Owner administrator token required to set the six-digit approval number.'
+            : 'Invalid contributor access token or unauthorized action.'
       });
     }
     if (verifiedContributor.isRateLimited) {
@@ -405,24 +407,74 @@ function doPost(e) {
       const spelling = payload.edoText === undefined ? String(meta.edoSpelling || '') : String(payload.edoText).trim();
       if (!english || english.length > 2000 || spelling.length > 5000) return createJsonResponse({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid English or Edo text.' });
       let newAudio;
+      let previousAudioFileId = null;
       const mime = String(payload.mimeType || '').split(';')[0].toLowerCase();
       if (payload.audioBase64 !== undefined) {
         if (!ALLOWED_MIME_TYPES[mime] || typeof payload.audioBase64 !== 'string' || payload.audioBase64.length > MAX_BASE64_CHARS) return createJsonResponse({ status: 'error', code: 'INVALID_AUDIO', message: 'Invalid audio format or size.' });
         const bytes = Utilities.base64Decode(payload.audioBase64);
         if (!bytes.length || bytes.length > MAX_AUDIO_BYTES) return createJsonResponse({ status: 'error', code: 'INVALID_AUDIO', message: 'Invalid audio size.' });
         if (!payload.permissions || payload.permissions.playback !== 'granted') return createJsonResponse({ status: 'error', code: 'CONSENT_REQUIRED', message: 'Confirm the speaker’s playback permission before sharing a replacement voice.' });
+        previousAudioFileId = meta.audioFileId || null;
         newAudio = folder.createFile(Utilities.newBlob(bytes, mime, meta.lessonId + '_' + meta.recordingId + '_rev-' + (version + 1) + '.' + ALLOWED_MIME_TYPES[mime]));
+        if (!newAudio || newAudio.getSize() === 0) {
+          return createJsonResponse({ status: 'error', code: 'STORAGE_FAILED', message: 'Failed to create replacement audio file in Google Drive.' });
+        }
       }
       rememberCompletedQuestion(meta.lessonId, meta.recordingId, meta.englishWord, true);
       archiveRevision(folder, file, meta, verifiedContributor);
       meta.lastMutationId = String(payload.mutationId || '');
       meta.englishWord = english; meta.edoSpelling = spelling;
-      if (newAudio) { meta.audioFileId = newAudio.getId(); meta.audioFileName = newAudio.getName(); meta.audioMimeType = mime; meta.audioSizeBytes = newAudio.getSize(); meta.durationSec = Math.max(0, Number(payload.durationSec) || 0); meta.permissions = { playback: 'granted', aiVoiceTraining: 'denied', statementVersion: '1' }; }
+      if (newAudio) {
+        meta.audioFileId = newAudio.getId();
+        meta.audioFileName = newAudio.getName();
+        meta.audioMimeType = mime;
+        meta.audioSizeBytes = newAudio.getSize();
+        meta.durationSec = Math.max(0, Number(payload.durationSec) || 0);
+        meta.permissions = { playback: 'granted', aiVoiceTraining: 'denied', statementVersion: '1' };
+
+        // Requirement: Permanently delete the previous audio file belonging to that lesson after successful replacement
+        // Do not keep multiple voice recordings for the same lesson.
+        // Do not delete recordings belonging to other lessons or contributors.
+        if (previousAudioFileId && previousAudioFileId !== newAudio.getId()) {
+          try {
+            const oldAudioFile = DriveApp.getFileById(previousAudioFileId);
+            if (isFileInStudioFolder(oldAudioFile)) {
+              const oldAudioName = oldAudioFile.getName();
+              if (oldAudioName.indexOf(meta.lessonId + '_' + meta.recordingId) === 0) {
+                oldAudioFile.setTrashed(true);
+              }
+            }
+          } catch (_) {}
+        }
+
+        // Clean up any other obsolete previous audio files for this exact lesson/recording in the studio folder
+        try {
+          const files = folder.getFiles();
+          const targetPrefix = meta.lessonId + '_' + meta.recordingId;
+          while (files.hasNext()) {
+            const f = files.next();
+            if (!f.isTrashed() && f.getId() !== newAudio.getId()) {
+              const fn = f.getName();
+              if (fn.indexOf(targetPrefix) === 0 && /\.(webm|m4a|mp4|aac|wav|ogg|mp3)$/i.test(fn)) {
+                f.setTrashed(true);
+              }
+            }
+          }
+        } catch (_) {}
+      }
       meta.status = meta.audioFileId ? (spelling ? 'spelling_submitted' : 'needs_spelling') : 'needs_audio';
       meta.reviewStatus = 'pending_approval';
       file.setContent(JSON.stringify(meta, null, 2));
       rememberCompletedQuestion(meta.lessonId, meta.recordingId, english, true);
-      return createJsonResponse({ status: 'success', action: action, verified: true, version: meta.version, metadataFileId: file.getId(), audioFileId: meta.audioFileId || null });
+      return createJsonResponse({
+        status: 'success',
+        action: action,
+        verified: true,
+        version: meta.version,
+        metadataFileId: file.getId(),
+        audioFileId: meta.audioFileId || null,
+        previousAudioFileId: previousAudioFileId
+      });
     }
     if (action === 'update_recording_permissions') {
       let file;
@@ -619,28 +671,90 @@ function doPost(e) {
       }
 
       // -------------------------------------------------------------
-      // ATOMIC DUPLICATE CHECK: Requires BOTH valid Audio AND valid Meta
+      // ATOMIC DUPLICATE CHECK: Prevent duplicate recordings for the same lesson
       // -------------------------------------------------------------
       const audioFileName = lessonId + '_' + recordingId + '.' + extension;
       const metaFileName = lessonId + '_' + recordingId + '_meta.json';
 
-      // A delayed original upload must never overwrite a later community revision.
-      const existingMetaFiles = folder.getFilesByName(metaFileName);
-      if (existingMetaFiles.hasNext()) {
-        const existingMeta = existingMetaFiles.next();
+      // 1. Check for exact match by filename or any existing active metadata for this lessonId
+      let existingMeta = null;
+      const exactMetaFiles = folder.getFilesByName(metaFileName);
+      if (exactMetaFiles.hasNext()) {
+        existingMeta = exactMetaFiles.next();
+      } else {
+        // Search folder for existing companion metadata belonging to this lessonId
+        const lessonFiles = folder.getFiles();
+        while (lessonFiles.hasNext()) {
+          const lf = lessonFiles.next();
+          if (!lf.isTrashed() && lf.getName().indexOf(lessonId + '_') === 0 && lf.getName().endsWith('_meta.json')) {
+            existingMeta = lf;
+            break;
+          }
+        }
+      }
+
+      if (existingMeta) {
         try {
           const parsedMeta = JSON.parse(existingMeta.getBlob().getDataAsString());
-          if (parsedMeta.reviewStatus === 'approved_locked' && normalizedEnglish(parsedMeta.englishWord) !== normalizedEnglish(english)) return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'Approved lesson preserved.' });
-          if (parsedMeta.recordingId === recordingId && parsedMeta.lessonId === lessonId && parsedMeta.audioFileId) {
-            const currentAudio = DriveApp.getFileById(parsedMeta.audioFileId);
-            if (isFileInStudioFolder(currentAudio) && currentAudio.getSize() > 0) {
-              rememberCompletedQuestion(lessonId, recordingId, parsedMeta.englishWord || english, true);
-              return createJsonResponse({ status: 'success', duplicate: true, verified: true,
-                action: 'upload_recording', lessonId: lessonId, recordingId: recordingId,
-                audioFileId: currentAudio.getId(), metadataFileId: existingMeta.getId(),
-                message: 'Existing contribution and its current revision preserved.' });
+          if (parsedMeta.reviewStatus === 'approved_locked' && normalizedEnglish(parsedMeta.englishWord) !== normalizedEnglish(english)) {
+            return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'Approved lesson preserved.' });
+          }
+
+          // Case A: Lesson already has an active audio file in Google Drive!
+          if (parsedMeta.audioFileId) {
+            let currentAudio = null;
+            try { currentAudio = DriveApp.getFileById(parsedMeta.audioFileId); } catch (_) {}
+            if (currentAudio && isFileInStudioFolder(currentAudio) && currentAudio.getSize() > 0) {
+              // If spelling was provided in this upload and was missing or updated, attach to existing metadata without creating another audio file!
+              if (edoText && (!parsedMeta.edoSpelling || parsedMeta.edoSpelling !== edoText)) {
+                parsedMeta.edoSpelling = edoText;
+                parsedMeta.status = 'spelling_submitted';
+                parsedMeta.updatedAt = new Date().toISOString();
+                existingMeta.setContent(JSON.stringify(parsedMeta, null, 2));
+              }
+              rememberCompletedQuestion(lessonId, parsedMeta.recordingId, parsedMeta.englishWord || english, true);
+              return createJsonResponse({
+                status: 'success',
+                duplicate: true,
+                verified: true,
+                action: 'upload_recording',
+                lessonId: lessonId,
+                recordingId: parsedMeta.recordingId,
+                audioFileId: currentAudio.getId(),
+                metadataFileId: existingMeta.getId(),
+                message: 'Existing recording preserved; spelling updated in existing metadata.'
+              });
             }
           }
+
+          // Case B: Lesson exists as a text-only stub waiting for audio (needs_audio)
+          if (!parsedMeta.audioFileId) {
+            const audioBlob = Utilities.newBlob(audioBytes, mimeType, audioFileName);
+            const audioFile = folder.createFile(audioBlob);
+            parsedMeta.audioFileId = audioFile.getId();
+            parsedMeta.audioFileName = audioFileName;
+            parsedMeta.audioMimeType = mimeType;
+            parsedMeta.audioSizeBytes = audioBytes.length;
+            parsedMeta.durationSec = durationSec;
+            parsedMeta.status = parsedMeta.edoSpelling ? 'spelling_submitted' : 'needs_spelling';
+            parsedMeta.updatedAt = new Date().toISOString();
+            if (edoText && !parsedMeta.edoSpelling) parsedMeta.edoSpelling = edoText;
+            existingMeta.setContent(JSON.stringify(parsedMeta, null, 2));
+            rememberCompletedQuestion(lessonId, parsedMeta.recordingId, parsedMeta.englishWord || english, true);
+            return createJsonResponse({
+              status: 'success',
+              duplicate: false,
+              verified: true,
+              action: 'upload_recording',
+              lessonId: lessonId,
+              recordingId: parsedMeta.recordingId,
+              audioFileId: audioFile.getId(),
+              metadataFileId: existingMeta.getId(),
+              recordingStatus: parsedMeta.status,
+              message: 'Audio attached to existing lesson metadata in Google Drive.'
+            });
+          }
+
           if (parsedMeta.reviewStatus === 'approved_locked') {
             return createJsonResponse({ status: 'error', code: 'ENTRY_LOCKED', message: 'An administrator must unlock this lesson before repair.' });
           }
@@ -983,7 +1097,7 @@ function doPost(e) {
         return createJsonResponse({
           status: 'error',
           code: 'UNAUTHORIZED_ADMIN',
-          message: 'Admin authorization or valid trusted approval code required to lock contributions.'
+          message: 'Invalid six-digit approval number or administrator token.'
         });
       }
       const metadataFileId = String(payload.metadataFileId || '').trim();
@@ -1022,6 +1136,34 @@ function doPost(e) {
         metadataFileId: metadataFileId,
         reviewStatus: 'approved_locked',
         approvedBy: meta.approvedBy
+      });
+    }
+
+    // ACTION F2: Owner Sets Six-Digit Approval Number (Strictly requires owner admin token)
+    if (action === 'admin_set_approval_code') {
+      if (verifiedContributor.role !== 'admin') {
+        return createJsonResponse({
+          status: 'error',
+          code: 'UNAUTHORIZED_ADMIN',
+          message: 'Owner administrator authorization required to set the six-digit approval number.'
+        });
+      }
+      const newCode = String(payload.approvalCode || '').trim();
+      if (!/^\d{6}$/.test(newCode)) {
+        return createJsonResponse({
+          status: 'error',
+          code: 'INVALID_APPROVAL_CODE',
+          message: 'Approval number must be exactly 6 digits (0-9).'
+        });
+      }
+      const props = PropertiesService.getScriptProperties();
+      props.setProperty('TRUSTED_APPROVAL_CODE_HASH', hashSha256(newCode));
+      props.deleteProperty('TRUSTED_APPROVAL_CODE');
+      CacheService.getScriptCache().remove('rate_approval_fail_attempts');
+      return createJsonResponse({
+        status: 'success',
+        action: 'admin_set_approval_code',
+        message: 'Six-digit approval number updated.'
       });
     }
 
@@ -1174,8 +1316,33 @@ function doPost(e) {
       };
       props.setProperty('DELETED_RECORDS_V1', JSON.stringify(tombstones));
 
-      // Deletion hides the lesson; the answered question remains permanently retired.
-      rememberCompletedQuestion(lessonId, recordingId, meta.englishWord, true);
+      // Check whether another active, valid contribution in the studio folder still answers this question
+      const deletedEnglish = normalizedEnglish(meta.englishWord || lessonId);
+      const remainingItems = sharedLibraryItems(folder);
+      const otherActiveAnswers = remainingItems.some(function(item) {
+        if (item.recordingId === recordingId || item.cloudMetadataFileId === metadataFileId) return false;
+        if (tombstones[item.recordingId] || tombstones[item.cloudMetadataFileId]) return false;
+        const otherNorm = normalizedEnglish(item.english);
+        return otherNorm === deletedEnglish || item.sourceLessonId === lessonId;
+      });
+
+      if (otherActiveAnswers) {
+        // Another active lesson still answers this question; keep it answered
+        rememberCompletedQuestion(lessonId, recordingId, meta.englishWord, true);
+      } else {
+        // No other active contribution answers this question: reopen it in Teach Edo!
+        if (deletedEnglish) {
+          props.deleteProperty('ANSWERED_Q_' + hashSha256(deletedEnglish));
+        }
+        let completed = {};
+        try {
+          completed = JSON.parse(props.getProperty('COMPLETED_QUESTIONS_V1') || '{}') || {};
+        } catch (_) {}
+        if (completed[lessonId]) {
+          delete completed[lessonId];
+          props.setProperty('COMPLETED_QUESTIONS_V1', JSON.stringify(completed));
+        }
+      }
 
       return createJsonResponse({
         status: 'success',

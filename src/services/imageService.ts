@@ -1,4 +1,5 @@
 import verifiedSubjects from '../data/vocabularyPictureSubjects.json';
+import starterVocabularyData from '../data/englishVocabulary.json';
 /**
  * Curated Vocabulary Image Service
  * Provides authentic, high-quality, properly licensed photographs and illustrations
@@ -170,6 +171,14 @@ const CURATED_IMAGE_FILENAMES: Record<string, string> = {
   'tomorrow': 'time-tomorrow.jpg',
   'night': 'time-night.jpg'
 };
+
+// Ensure all starter vocabulary items map to their curated image asset
+for (const item of (starterVocabularyData as Array<{ id: string; english: string }>)) {
+  const norm = normalizeEnglish(item.english);
+  if (norm && !CURATED_IMAGE_FILENAMES[norm]) {
+    CURATED_IMAGE_FILENAMES[norm] = `${item.id}.jpg`;
+  }
+}
 
 const ONLINE_IMAGES_CACHE_KEY = 'edo_online_vocabulary_images_v1';
 

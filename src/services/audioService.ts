@@ -440,6 +440,367 @@ const MIN_AUDIO_BLOB_BYTES = 250;
 const MIN_VOICE_PEAK_RMS = 0.0035;
 const MIN_VOICE_PEAK_AMPLITUDE = 0.012;
 
+/**
+ * Encodes audio channel Float32Array PCM buffers into a standard 16-bit uncompressed WAV ArrayBuffer.
+ */
+export function encodeWavPcm16(channelData: Float32Array[], sampleRate: number): Uint8Array {
+  const numChannels = channelData.length;
+  const numSamples = channelData[0].length;
+  const bytesPerSample = 2; // 16-bit PCM
+  const blockAlign = numChannels * bytesPerSample;
+  const byteRate = sampleRate * blockAlign;
+  const dataSize = numSamples * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true); // Linear PCM subchunk size
+  view.setUint16(20, 1, true); // Linear PCM format
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true); // 16 bits per sample
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    for (let channel = 0; channel < numChannels; channel++) {
+      const sample = Math.max(-1, Math.min(1, channelData[channel][i]));
+      const int16 = sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767);
+      view.setInt16(offset, int16, true);
+      offset += 2;
+    }
+  }
+
+  return new Uint8Array(buffer);
+}
+
+export interface TrimResult {
+  channels: Float32Array[];
+  trimmedStartSample: number;
+  trimmedEndSample: number;
+  durationSec: number;
+  originalDurationSec: number;
+  wasTrimmed: boolean;
+}
+
+/**
+ * Pure sample-level silence trimming algorithm with adaptive noise-floor estimation.
+ * Computes the energy profile across the recording, determines ambient noise vs speech levels,
+ * and preserves generous safety padding at both start (150ms) and end (200ms) so no spoken
+ * consonant, syllable, decay, or natural pause within phrases is cut off.
+ */
+export function trimPcmChannelData(
+  channels: Float32Array[],
+  sampleRate: number,
+  options: {
+    leadPaddingMs?: number;
+    trailPaddingMs?: number;
+  } = {}
+): TrimResult {
+  const numChannels = channels.length;
+  if (numChannels === 0 || channels[0].length === 0) {
+    return {
+      channels,
+      trimmedStartSample: 0,
+      trimmedEndSample: 0,
+      durationSec: 0,
+      originalDurationSec: 0,
+      wasTrimmed: false
+    };
+  }
+
+  const totalSamples = channels[0].length;
+  const originalDurationSec = Math.max(1, Math.round(totalSamples / sampleRate));
+  const leadPaddingMs = options.leadPaddingMs ?? 150; // 150ms lead padding ensures initial consonants (s, f, kh, vb) are kept
+  const trailPaddingMs = options.trailPaddingMs ?? 200; // 200ms trail padding preserves trailing decay
+
+  // Use 20ms windows to calculate energy profile across the recording
+  const windowSize = Math.max(1, Math.floor(sampleRate * 0.02));
+  const numWindows = Math.floor(totalSamples / windowSize);
+
+  if (numWindows < 5) {
+    return {
+      channels,
+      trimmedStartSample: 0,
+      trimmedEndSample: totalSamples,
+      durationSec: originalDurationSec,
+      originalDurationSec,
+      wasTrimmed: false
+    };
+  }
+
+  const windowRms = new Float32Array(numWindows);
+  const windowPeak = new Float32Array(numWindows);
+
+  for (let w = 0; w < numWindows; w++) {
+    const start = w * windowSize;
+    const end = Math.min(totalSamples, start + windowSize);
+    let sumSq = 0;
+    let maxA = 0;
+    for (let i = start; i < end; i++) {
+      for (let c = 0; c < numChannels; c++) {
+        const a = Math.abs(channels[c][i]);
+        if (a > maxA) maxA = a;
+        sumSq += a * a;
+      }
+    }
+    const count = (end - start) * numChannels;
+    windowRms[w] = Math.sqrt(sumSq / count);
+    windowPeak[w] = maxA;
+  }
+
+  // Determine ambient noise floor and speech level adaptively
+  const sortedRms = Float32Array.from(windowRms).sort();
+  const sortedPeak = Float32Array.from(windowPeak).sort();
+
+  // Noise floor is 15th percentile of window energy
+  const noiseIndex = Math.floor(numWindows * 0.15);
+  const noiseRms = sortedRms[noiseIndex];
+  const noisePeak = sortedPeak[noiseIndex];
+
+  // Speech peak is 95th percentile
+  const peakIndex = Math.floor(numWindows * 0.95);
+  const speechPeakRms = sortedRms[peakIndex];
+  const speechPeakMax = sortedPeak[peakIndex];
+
+  // If the recording has no discernible speech contrast (e.g. completely silent or continuous steady noise), do not trim
+  if (speechPeakRms < 0.008 && speechPeakMax < 0.025) {
+    return {
+      channels,
+      trimmedStartSample: 0,
+      trimmedEndSample: totalSamples,
+      durationSec: originalDurationSec,
+      originalDurationSec,
+      wasTrimmed: false
+    };
+  }
+
+  // Dynamic speech detection threshold calibrated adaptively above the ambient noise floor:
+  // Must exceed noise floor by at least 1.8x, but also scaled to speech peak
+  const speechRmsThreshold = Math.max(0.007, noiseRms * 1.8 + 0.003, speechPeakRms * 0.10);
+  const speechPeakThreshold = Math.max(0.022, noisePeak * 1.8 + 0.010, speechPeakMax * 0.12);
+
+  // Scan for speech start: Require 2 consecutive windows (40ms) exceeding threshold to reject clicks/pops
+  let firstSpeechWindow = -1;
+  for (let w = 0; w < numWindows - 1; w++) {
+    const isSpeech =
+      (windowRms[w] >= speechRmsThreshold || windowPeak[w] >= speechPeakThreshold) &&
+      (windowRms[w + 1] >= speechRmsThreshold || windowPeak[w + 1] >= speechPeakThreshold);
+    if (isSpeech) {
+      firstSpeechWindow = w;
+      break;
+    }
+  }
+
+  // Scan for speech end backwards: Require 2 consecutive windows exceeding threshold
+  let lastSpeechWindow = -1;
+  for (let w = numWindows - 1; w >= 1; w--) {
+    const isSpeech =
+      (windowRms[w] >= speechRmsThreshold || windowPeak[w] >= speechPeakThreshold) &&
+      (windowRms[w - 1] >= speechRmsThreshold || windowPeak[w - 1] >= speechPeakThreshold);
+    if (isSpeech) {
+      lastSpeechWindow = w;
+      break;
+    }
+  }
+
+  if (firstSpeechWindow === -1 || lastSpeechWindow === -1 || lastSpeechWindow < firstSpeechWindow) {
+    return {
+      channels,
+      trimmedStartSample: 0,
+      trimmedEndSample: totalSamples,
+      durationSec: originalDurationSec,
+      originalDurationSec,
+      wasTrimmed: false
+    };
+  }
+
+  const leadPaddingSamples = Math.floor(sampleRate * (leadPaddingMs / 1000));
+  const trailPaddingSamples = Math.floor(sampleRate * (trailPaddingMs / 1000));
+
+  const startTrim = Math.max(0, firstSpeechWindow * windowSize - leadPaddingSamples);
+  const endTrim = Math.min(totalSamples, (lastSpeechWindow + 1) * windowSize + trailPaddingSamples);
+
+  // Only trim if at least 250ms of silence was actually removed overall
+  const trimmedSamplesCount = totalSamples - (endTrim - startTrim);
+  if (trimmedSamplesCount < Math.floor(sampleRate * 0.25)) {
+    return {
+      channels,
+      trimmedStartSample: 0,
+      trimmedEndSample: totalSamples,
+      durationSec: originalDurationSec,
+      originalDurationSec,
+      wasTrimmed: false
+    };
+  }
+
+  const trimmedChannels = channels.map((c) => c.slice(startTrim, endTrim));
+  const durationSec = Math.max(1, Math.round((endTrim - startTrim) / sampleRate));
+
+  return {
+    channels: trimmedChannels,
+    trimmedStartSample: startTrim,
+    trimmedEndSample: endTrim,
+    durationSec,
+    originalDurationSec,
+    wasTrimmed: true
+  };
+}
+
+/**
+ * Automatically decodes and trims lead/trail silence from recorded audio using adaptive VAD,
+ * returning a clean, trimmed 16-bit PCM WAV Blob with full pronunciation preserved.
+ * Falls back safely to the original blob if AudioContext decoding is unavailable.
+ */
+export async function trimAudioSilence(
+  blob: Blob,
+  fallbackMimeType: string
+): Promise<{
+  blob: Blob;
+  mimeType: string;
+  durationSec: number;
+  originalDurationSec: number;
+  trimmedDurationSec: number;
+  wasTrimmed: boolean;
+  trimError?: string;
+}> {
+  if (
+    typeof window === 'undefined' ||
+    (!window.AudioContext && !(window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)
+  ) {
+    return {
+      blob,
+      mimeType: fallbackMimeType,
+      durationSec: 0,
+      originalDurationSec: 0,
+      trimmedDurationSec: 0,
+      wasTrimmed: false
+    };
+  }
+
+  let audioCtx: AudioContext | null = null;
+  try {
+    const AudioCtxClass =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtxClass) {
+      return {
+        blob,
+        mimeType: fallbackMimeType,
+        durationSec: 0,
+        originalDurationSec: 0,
+        trimmedDurationSec: 0,
+        wasTrimmed: false
+      };
+    }
+    audioCtx = new AudioCtxClass();
+    const arrayBuffer = await blob.arrayBuffer();
+    const bufferCopy = arrayBuffer.slice(0);
+
+    const audioBuffer: AudioBuffer = await new Promise((resolve, reject) => {
+      let settled = false;
+      try {
+        const p = audioCtx!.decodeAudioData(
+          bufferCopy,
+          (buf) => {
+            if (!settled) {
+              settled = true;
+              resolve(buf);
+            }
+          },
+          (err) => {
+            if (!settled) {
+              settled = true;
+              reject(err);
+            }
+          }
+        );
+        if (p && typeof p.then === 'function') {
+          p.then((buf) => {
+            if (!settled) {
+              settled = true;
+              resolve(buf);
+            }
+          }).catch((err) => {
+            if (!settled) {
+              settled = true;
+              reject(err);
+            }
+          });
+        }
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    const numChannels = audioBuffer.numberOfChannels;
+    const channels: Float32Array[] = [];
+    for (let c = 0; c < numChannels; c++) {
+      channels.push(audioBuffer.getChannelData(c));
+    }
+
+    const trimmed = trimPcmChannelData(channels, audioBuffer.sampleRate);
+    const originalDur = Math.max(1, Math.round(audioBuffer.duration));
+
+    if (!trimmed.wasTrimmed || trimmed.channels[0].length === 0) {
+      return {
+        blob,
+        mimeType: fallbackMimeType,
+        durationSec: originalDur,
+        originalDurationSec: originalDur,
+        trimmedDurationSec: originalDur,
+        wasTrimmed: false
+      };
+    }
+
+    const wavBytes = encodeWavPcm16(trimmed.channels, audioBuffer.sampleRate);
+    const trimmedBlob = new Blob([wavBytes], { type: 'audio/wav' });
+
+    console.log(
+      `[AudioService] Automatically trimmed recording: original ${originalDur}s -> trimmed ${trimmed.durationSec}s (${(trimmed.channels[0].length / audioBuffer.sampleRate).toFixed(2)}s)`
+    );
+
+    return {
+      blob: trimmedBlob,
+      mimeType: 'audio/wav',
+      durationSec: trimmed.durationSec,
+      originalDurationSec: originalDur,
+      trimmedDurationSec: trimmed.durationSec,
+      wasTrimmed: true
+    };
+  } catch (err) {
+    const errorMsg = String(err && (err as Error).message ? (err as Error).message : err);
+    console.warn('[AudioService] Automatic silence trimming encountered an issue, preserving raw recording:', errorMsg);
+    return {
+      blob,
+      mimeType: fallbackMimeType,
+      durationSec: 0,
+      originalDurationSec: 0,
+      trimmedDurationSec: 0,
+      wasTrimmed: false,
+      trimError: errorMsg
+    };
+  } finally {
+    if (audioCtx) {
+      try {
+        await audioCtx.close();
+      } catch (_) {}
+    }
+  }
+}
+
 export class MicrophoneRecorder {
   private mediaRecorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
@@ -642,7 +1003,7 @@ export class MicrophoneRecorder {
     return new Promise<RecordingResult>((resolve) => {
       const recorder = this.mediaRecorder!;
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const effectiveMimeType =
           recorder.mimeType || this.chosenMimeType || this.chunks[0]?.type || 'audio/mp4';
         const blob = new Blob(this.chunks, { type: effectiveMimeType });
@@ -705,7 +1066,23 @@ export class MicrophoneRecorder {
           return;
         }
 
-        const objectUrl = URL.createObjectURL(blob);
+        // 4. Automatically trim lead and trail silence while preserving full spoken pronunciation
+        let finalBlob = blob;
+        let finalMimeType = effectiveMimeType;
+        let finalDurationSec = actualDurationSec;
+
+        try {
+          const trimmed = await trimAudioSilence(blob, effectiveMimeType);
+          if (trimmed.durationSec > 0 && trimmed.blob) {
+            finalBlob = trimmed.blob;
+            finalMimeType = trimmed.mimeType;
+            finalDurationSec = trimmed.durationSec;
+          }
+        } catch (_) {
+          // Gracefully preserve original blob if decoding/trimming fails
+        }
+
+        const objectUrl = URL.createObjectURL(finalBlob);
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64Url = typeof reader.result === 'string' ? reader.result : '';
@@ -715,7 +1092,7 @@ export class MicrophoneRecorder {
               ok: false,
               audioDataUrl: '',
               objectUrl: '',
-              mimeType: effectiveMimeType,
+              mimeType: finalMimeType,
               durationSec: 0,
               elapsedMs,
               peakRms: capturedPeakRms,
@@ -729,9 +1106,9 @@ export class MicrophoneRecorder {
             ok: true,
             audioDataUrl: base64Url,
             objectUrl,
-            audioBlob: blob,
-            mimeType: effectiveMimeType,
-            durationSec: actualDurationSec,
+            audioBlob: finalBlob,
+            mimeType: finalMimeType,
+            durationSec: finalDurationSec,
             elapsedMs,
             peakRms: capturedPeakRms
           });
@@ -743,7 +1120,7 @@ export class MicrophoneRecorder {
             ok: false,
             audioDataUrl: '',
             objectUrl: '',
-            mimeType: effectiveMimeType,
+            mimeType: finalMimeType,
             durationSec: 0,
             elapsedMs,
             peakRms: capturedPeakRms,
@@ -752,7 +1129,7 @@ export class MicrophoneRecorder {
           });
         };
 
-        reader.readAsDataURL(blob);
+        reader.readAsDataURL(finalBlob);
       };
 
       try {
@@ -951,4 +1328,91 @@ export function formatDuration(seconds: number): string {
   const mins = Math.floor(s / 60);
   const rem = s % 60;
   return `${mins}:${rem < 10 ? '0' : ''}${rem}`;
+}
+
+// ============================================================================
+// Session-Based Shared Audio Cache for Fast Playback
+// ============================================================================
+
+const MAX_SESSION_CACHE_SIZE = 80;
+const sessionAudioCache = new Map<string, string>();
+const inFlightAudioRequests = new Map<string, Promise<string>>();
+
+/**
+ * Returns cached audio data URL from session memory if available.
+ * Refreshes LRU position on access.
+ */
+export function getCachedSessionAudio(key: string): string | null {
+  if (!key) return null;
+  const audio = sessionAudioCache.get(key);
+  if (audio) {
+    sessionAudioCache.delete(key);
+    sessionAudioCache.set(key, audio);
+    return audio;
+  }
+  return null;
+}
+
+/**
+ * Stores audio data URL in session memory with bounded LRU eviction.
+ */
+export function setCachedSessionAudio(key: string, audioDataUrl: string): void {
+  if (!key || !audioDataUrl) return;
+  if (sessionAudioCache.has(key)) {
+    sessionAudioCache.delete(key);
+  } else if (sessionAudioCache.size >= MAX_SESSION_CACHE_SIZE) {
+    // Evict oldest entry (first item in Map iterator)
+    const oldestKey = sessionAudioCache.keys().next().value;
+    if (oldestKey) sessionAudioCache.delete(oldestKey);
+  }
+  sessionAudioCache.set(key, audioDataUrl);
+}
+
+/**
+ * Invalidates cached audio for a specific key (e.g. on voice replacement or deletion).
+ */
+export function invalidateSessionAudio(key: string): void {
+  if (!key) return;
+  sessionAudioCache.delete(key);
+  inFlightAudioRequests.delete(key);
+}
+
+/**
+ * Clears the entire session audio cache.
+ */
+export function clearSessionAudioCache(): void {
+  sessionAudioCache.clear();
+  inFlightAudioRequests.clear();
+}
+
+/**
+ * Returns current size of session audio cache (for telemetry/testing).
+ */
+export function getSessionAudioCacheSize(): number {
+  return sessionAudioCache.size;
+}
+
+/**
+ * Loads audio from session cache or executes fetcher once with in-flight deduplication.
+ * Prevents duplicate network downloads if two Play requests occur while downloading.
+ */
+export async function loadOrFetchAudio(key: string, fetcher: () => Promise<string>): Promise<string> {
+  if (!key) return fetcher();
+  const cached = getCachedSessionAudio(key);
+  if (cached) return cached;
+
+  let inFlight = inFlightAudioRequests.get(key);
+  if (!inFlight) {
+    inFlight = (async () => {
+      try {
+        const audio = await fetcher();
+        setCachedSessionAudio(key, audio);
+        return audio;
+      } finally {
+        inFlightAudioRequests.delete(key);
+      }
+    })();
+    inFlightAudioRequests.set(key, inFlight);
+  }
+  return inFlight;
 }

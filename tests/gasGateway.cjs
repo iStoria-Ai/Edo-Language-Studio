@@ -366,7 +366,10 @@ function runTests() {
   assert.equal(correction.status, 'success');
   assert.equal(correction.audioFileId, needsSpellingRes.audioFileId);
   const afterCorrection = JSON.parse(driveApp.getFileById(needsSpellingRes.metadataFileId).getBlob().getDataAsString());
-  assert(afterCorrection.revisionHistory.length > 0);
+  assert.equal(afterCorrection.version, (currentFood.version || 0) + 1, 'Version is incremented in-place');
+  assert.equal(afterCorrection.edoSpelling, 'Evbare corrected', 'Spelling is updated in-place');
+  const historyFilesAfterEdit = Array.from(files.values()).filter(f => !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.includes('_history_'));
+  assert.equal(historyFilesAfterEdit.length, 0, 'Editing spelling must NOT create history JSON files');
   const conflict = JSON.parse(sandbox.doPost({ postData: { contents: JSON.stringify({ action: 'update_contribution', metadataFileId: needsSpellingRes.metadataFileId, expectedVersion: currentFood.version || 0, mutationId: 'correction-0002', edoText: 'Lost-update attempt' }) } }).getContent());
   assert.equal(conflict.code, 'REVISION_CONFLICT');
   const textId = 'text-' + 'f'.repeat(64);
@@ -379,6 +382,309 @@ function runTests() {
   assert.equal(attachedItem.hasAudio, true);
   assert.equal(attachedItem.edoText, 'Speaker supplied spelling');
   assert(libraryRequest().answeredEnglish.includes('head'), 'Custom aliases retire the equivalent starter question');
+
+  // Step 8b: Testing Voice Replacement & Complete Google Drive Old Audio Deletion
+  console.log('--- Step 8b: Testing Replacement Voice & Drive Cleanup ---');
+  // 1. Initial lesson with recording
+  const replaceUpload = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'word-replacetest',
+      recordingId: 'rec-replace-001',
+      english: 'Door',
+      edoText: 'Ukhegbe',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav',
+      durationSec: 3
+    }) }
+  }).getContent());
+  assert.equal(replaceUpload.status, 'success');
+  const oldAudioId = replaceUpload.audioFileId;
+  const replaceMetaId = replaceUpload.metadataFileId;
+  assert.equal(driveApp.getFileById(oldAudioId).isTrashed(), false);
+
+  // Another contributor's unrelated recording
+  const otherUpload = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'word-othertest',
+      recordingId: 'rec-other-001',
+      english: 'Window',
+      edoText: 'Owindo',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav',
+      durationSec: 3
+    }) }
+  }).getContent());
+  assert.equal(otherUpload.status, 'success');
+  const otherAudioId = otherUpload.audioFileId;
+  assert.equal(driveApp.getFileById(otherAudioId).isTrashed(), false);
+
+  // 2. Failed upload test: invalid audio must NOT delete the old working recording
+  const failedReplacement = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'update_contribution',
+      metadataFileId: replaceMetaId,
+      expectedVersion: 0,
+      audioBase64: 'short', // invalid size
+      mimeType: 'audio/wav'
+    }) }
+  }).getContent());
+  assert.equal(failedReplacement.status, 'error');
+  assert.equal(driveApp.getFileById(oldAudioId).isTrashed(), false, 'Failed replacement preserves existing recording');
+
+  // 3. Successful replacement voice upload
+  const replacementWavB64 = Buffer.from('RIFF....WAVEfmt ....data....replacement-audio').toString('base64');
+  const replaceRes = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'update_contribution',
+      metadataFileId: replaceMetaId,
+      expectedVersion: 0,
+      mutationId: 'replace-mutation-001',
+      audioBase64: replacementWavB64,
+      mimeType: 'audio/wav',
+      durationSec: 2,
+      permissions: { playback: 'granted', aiVoiceTraining: 'denied' }
+    }) }
+  }).getContent());
+  assert.equal(replaceRes.status, 'success');
+  assert.equal(replaceRes.verified, true);
+  const newAudioId = replaceRes.audioFileId;
+  assert(newAudioId && newAudioId !== oldAudioId, 'New audio file must have a new distinct ID');
+  assert.equal(replaceRes.previousAudioFileId, oldAudioId, 'Response returns previous audio file ID');
+
+  // 4. Verify Drive cleanup:
+  // Previous audio file belonging to that lesson is permanently deleted (trashed)
+  assert.equal(files.get(oldAudioId).isTrashed(), true, 'Previous audio file permanently trashed');
+  assert.throws(() => driveApp.getFileById(oldAudioId), /File not found/);
+  // New audio file is alive and verified
+  assert.equal(files.get(newAudioId).isTrashed(), false, 'New audio file is verified and active');
+  // Unrelated lesson/contributor audio is NOT deleted
+  assert.equal(files.get(otherAudioId).isTrashed(), false, 'Unrelated lesson audio preserved');
+
+  // Verify only 1 audio file exists for word-replacetest_rec-replace-001
+  const activeAudioForLesson = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('word-replacetest_rec-replace-001') && !f.name.endsWith('.json')
+  );
+  assert.equal(activeAudioForLesson.length, 1, 'Exactly one audio file kept for this lesson in Google Drive');
+  assert.equal(activeAudioForLesson[0].id, newAudioId);
+
+  // 5. Verify Playback
+  const newStream = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({ action: 'stream_audio', fileId: newAudioId }) }
+  }).getContent());
+  assert.equal(newStream.status, 'success');
+
+  const oldStream = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({ action: 'stream_audio', fileId: oldAudioId }) }
+  }).getContent());
+  assert.equal(oldStream.status, 'error', 'Trashed old audio cannot be played');
+
+  // 5b. Verify successive voice replacement (v1 -> v2) also trashes v1 and preserves exactly 1 active audio file
+  const replacementWavB64v2 = Buffer.from('RIFF....WAVEfmt ....data....replacement-audio-v2').toString('base64');
+  const replaceRes2 = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'update_contribution',
+      metadataFileId: replaceMetaId,
+      expectedVersion: 1,
+      mutationId: 'replace-mutation-002',
+      audioBase64: replacementWavB64v2,
+      mimeType: 'audio/wav',
+      durationSec: 2,
+      permissions: { playback: 'granted', aiVoiceTraining: 'denied' }
+    }) }
+  }).getContent());
+  assert.equal(replaceRes2.status, 'success');
+  const v2AudioId = replaceRes2.audioFileId;
+  assert(v2AudioId && v2AudioId !== newAudioId);
+  assert.equal(files.get(oldAudioId).isTrashed(), true, 'Original v0 audio remains trashed');
+  assert.equal(files.get(newAudioId).isTrashed(), true, 'Previous v1 audio is now trashed');
+  assert.equal(files.get(v2AudioId).isTrashed(), false, 'Latest v2 audio is active');
+
+  // Verify NO history JSON snapshots were created (Simplified Two-File Architecture)
+  const historyFiles = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.includes('_history_')
+  );
+  assert.equal(historyFiles.length, 0, 'No history JSON snapshots created during voice replacements');
+
+  // Verify strictly 1 audio file exists for the lesson in the entire folder
+  const activeAudioAfterV2 = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('word-replacetest_rec-replace-001') && !f.name.endsWith('.json')
+  );
+  assert.equal(activeAudioAfterV2.length, 1, 'Strictly 1 active audio file exists after multiple replacements');
+  assert.equal(activeAudioAfterV2[0].id, v2AudioId);
+
+  // Verify strictly 1 metadata JSON file exists for the lesson in the entire folder
+  const activeMetaAfterV2 = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('word-replacetest_rec-replace-001') && f.name.endsWith('.json')
+  );
+  assert.equal(activeMetaAfterV2.length, 1, 'Strictly 1 metadata JSON file exists for the lesson in Google Drive');
+
+  // Verify the entire lesson consists of strictly 2 files in Google Drive: 1 audio + 1 metadata
+  const totalLessonFiles = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('word-replacetest_rec-replace-001')
+  );
+  assert.equal(totalLessonFiles.length, 2, 'Lesson maintains strictly two files in Google Drive (1 audio + 1 metadata)');
+
+  // 6. Verify locking permission: Ordinary user cannot replace audio on approved_locked lesson
+  const lockCode = '987654';
+  const lockCodeHash = require('node:crypto').createHash('sha256').update(lockCode).digest('hex');
+  sandbox.PropertiesService.getScriptProperties().setProperty('TRUSTED_APPROVAL_CODE_HASH', lockCodeHash);
+  const lockRes = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({ action: 'admin_lock_entry', approvalCode: lockCode, metadataFileId: replaceMetaId }) }
+  }).getContent());
+  assert.equal(lockRes.status, 'success');
+
+  // Verify approval/locking did NOT create any history JSON files
+  const historyFilesAfterLock = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.includes('_history_')
+  );
+  assert.equal(historyFilesAfterLock.length, 0, 'Approving and locking must NOT create history JSON files');
+
+  // Verify total files for lesson is still strictly 2 after approval
+  const totalLessonFilesAfterLock = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('word-replacetest_rec-replace-001')
+  );
+  assert.equal(totalLessonFilesAfterLock.length, 2, 'Lesson still maintains strictly two files after approval and locking');
+
+  const lockedReplaceAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'update_contribution',
+      metadataFileId: replaceMetaId,
+      expectedVersion: 2,
+      audioBase64: replacementWavB64,
+      mimeType: 'audio/wav',
+      permissions: { playback: 'granted' }
+    }) }
+  }).getContent());
+  assert.equal(lockedReplaceAttempt.code, 'ENTRY_LOCKED', 'Ordinary users must not replace locked recordings');
+  assert.equal(driveApp.getFileById(v2AudioId).isTrashed(), false, 'Approved audio is preserved');
+
+  // Clean up test records
+  driveApp.getFileById(v2AudioId).setTrashed(true);
+  driveApp.getFileById(replaceMetaId).setTrashed(true);
+  driveApp.getFileById(otherAudioId).setTrashed(true);
+  driveApp.getFileById(otherUpload.metadataFileId).setTrashed(true);
+  console.log('✓ Replacement recordings, Google Drive cleanup, playback verification, and locked protection verified.');
+
+  // Step 8c: Testing Teach Edo & Help Others Spelling Without Audio Duplication
+  console.log('--- Step 8c: Testing Teach Edo & Help Others Spelling Without Audio Duplication ---');
+
+  // 1. Teach Edo: Contributor records voice without spelling
+  const teachEdoVoiceOnly = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'move-stand-test',
+      recordingId: 'rec-stand-001',
+      english: 'Stand',
+      edoText: '',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav',
+      durationSec: 2
+    }) }
+  }).getContent());
+  assert.equal(teachEdoVoiceOnly.status, 'success');
+  assert.equal(teachEdoVoiceOnly.recordingStatus, 'needs_spelling');
+  const standAudioId = teachEdoVoiceOnly.audioFileId;
+  const standMetaId = teachEdoVoiceOnly.metadataFileId;
+
+  // Verify exactly 1 audio file exists for Stand
+  const standAudioFiles1 = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('move-stand-test_') && !f.name.endsWith('.json')
+  );
+  assert.equal(standAudioFiles1.length, 1, 'Exactly 1 audio file created initially for Stand');
+
+  // 2. Teach Edo: User later writes Edo spelling for Stand ("Otẹ") and submits
+  // Gateway MUST update the existing metadata file and NOT create another audio file!
+  const teachEdoSpellingLater = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'move-stand-test',
+      recordingId: 'rec-stand-002', // different recording ID from later step
+      english: 'Stand',
+      edoText: 'Otẹ',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav',
+      durationSec: 2
+    }) }
+  }).getContent());
+  assert.equal(teachEdoSpellingLater.status, 'success');
+  assert.equal(teachEdoSpellingLater.duplicate, true);
+  assert.equal(teachEdoSpellingLater.metadataFileId, standMetaId, 'Updated existing metadata file');
+  assert.equal(teachEdoSpellingLater.audioFileId, standAudioId, 'Preserved existing audio file ID');
+
+  // Verify that STILL only 1 audio file exists for Stand (NO duplicate audio file!)
+  const standAudioFiles2 = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('move-stand-test_') && !f.name.endsWith('.json')
+  );
+  assert.equal(standAudioFiles2.length, 1, 'Adding spelling later did NOT create a second audio file!');
+
+  // Verify metadata has spelling updated
+  const standMetaUpdated = JSON.parse(driveApp.getFileById(standMetaId).getBlob().getDataAsString());
+  assert.equal(standMetaUpdated.edoSpelling, 'Otẹ', 'Spelling attached to existing metadata');
+  assert.equal(standMetaUpdated.status, 'spelling_submitted');
+
+  // 3. Help Others: Contributor submits spelling for another voice-only entry via update_contribution
+  const helpOthersItem = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'upload_recording',
+      authToken: '',
+      lessonId: 'word-jump-test',
+      recordingId: 'rec-jump-001',
+      english: 'Jump',
+      edoText: '',
+      audioBase64: dummyWavB64,
+      mimeType: 'audio/wav',
+      durationSec: 2
+    }) }
+  }).getContent());
+  assert.equal(helpOthersItem.status, 'success');
+  const jumpAudioId = helpOthersItem.audioFileId;
+  const jumpMetaId = helpOthersItem.metadataFileId;
+
+  // Help Others writes spelling via update_contribution (NO audioBase64 in payload)
+  const helpOthersSave = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'update_contribution',
+      metadataFileId: jumpMetaId,
+      expectedVersion: 0,
+      mutationId: 'help-others-jump-001',
+      edoText: 'Gbe'
+    }) }
+  }).getContent());
+  assert.equal(helpOthersSave.status, 'success');
+  assert.equal(helpOthersSave.audioFileId, jumpAudioId, 'Audio file ID preserved');
+
+  // Verify exactly 1 audio file exists for Jump (Help Others created NO audio files)
+  const jumpAudioFiles = Array.from(files.values()).filter(f =>
+    !f.trashed && f.parentFolderId === TARGET_FOLDER_ID && f.name.startsWith('word-jump-test_') && !f.name.endsWith('.json')
+  );
+  assert.equal(jumpAudioFiles.length, 1, 'Help Others saving spelling created ZERO audio files');
+
+  // 4. Failed upload safety: corrupted audio payload must fail safely without altering existing files
+  const failedUpload = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'update_contribution',
+      metadataFileId: jumpMetaId,
+      expectedVersion: 1,
+      audioBase64: 'bad-short-string',
+      mimeType: 'audio/wav'
+    }) }
+  }).getContent());
+  assert.equal(failedUpload.status, 'error');
+  assert.equal(driveApp.getFileById(jumpAudioId).isTrashed(), false, 'Existing valid audio retained on failed upload');
+
+  // Clean up Step 8c test files
+  driveApp.getFileById(standAudioId).setTrashed(true);
+  driveApp.getFileById(standMetaId).setTrashed(true);
+  driveApp.getFileById(jumpAudioId).setTrashed(true);
+  driveApp.getFileById(jumpMetaId).setTrashed(true);
+  console.log('✓ Teach Edo and Help Others spelling additions verified without audio duplication.');
+
   for (const [id, file] of files) if (!beforeCorrectionIds.has(id)) file.setTrashed(true);
   console.log('✓ Revision conflicts, immutable audio history, and spelling-only → complete use the same metadata record.');
 
@@ -601,6 +907,91 @@ function runTests() {
   }).getContent());
   assert.equal(finalUnlock.status, 'success');
 
+  // --- Step 11c: Owner-Configured Six-Digit Approval Number System ---
+  console.log('--- Step 11c: Testing Six-Digit Approval Number System ---');
+  // 1. Non-admin cannot set the 6-digit approval code
+  const unauthorizedSetCode = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_set_approval_code',
+      authToken: speakerToken,
+      approvalCode: '482910'
+    }) }
+  }).getContent());
+  assert.equal(unauthorizedSetCode.code, 'UNAUTHORIZED_ADMIN');
+
+  // 2. Owner admin cannot set a non-6-digit code
+  const invalidFormatSetCode = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_set_approval_code',
+      authToken: adminToken,
+      approvalCode: '12345'
+    }) }
+  }).getContent());
+  assert.equal(invalidFormatSetCode.code, 'INVALID_APPROVAL_CODE');
+
+  // 3. Owner admin sets a valid 6-digit approval code
+  const validSetCode = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_set_approval_code',
+      authToken: adminToken,
+      approvalCode: '482910'
+    }) }
+  }).getContent());
+  assert.equal(validSetCode.status, 'success');
+  assert.equal(validSetCode.action, 'admin_set_approval_code');
+
+  // 4. Trusted Edo speaker approves and locks lesson using the 6-digit number
+  const sixDigitLock = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_lock_entry',
+      authToken: '482910',
+      approvalCode: '482910',
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(sixDigitLock.status, 'success');
+  assert.equal(sixDigitLock.reviewStatus, 'approved_locked');
+  assert.equal(sixDigitLock.approvedBy.role, 'trusted_approver');
+
+  // 5. The 6-digit number cannot unlock lessons, delete lessons, or change the 6-digit number
+  const sixDigitUnlockAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_unlock_entry',
+      authToken: '482910',
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(sixDigitUnlockAttempt.code, 'UNAUTHORIZED_ADMIN');
+
+  const sixDigitDeleteAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_delete_entry',
+      authToken: '482910',
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(sixDigitDeleteAttempt.code, 'UNAUTHORIZED_ADMIN');
+
+  const sixDigitChangeCodeAttempt = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_set_approval_code',
+      authToken: '482910',
+      approvalCode: '999999'
+    }) }
+  }).getContent());
+  assert.equal(sixDigitChangeCodeAttempt.code, 'UNAUTHORIZED_ADMIN');
+
+  // 6. Owner admin can unlock the lesson afterward
+  const ownerUnlockAfterSixDigit = JSON.parse(sandbox.doPost({
+    postData: { contents: JSON.stringify({
+      action: 'admin_unlock_entry',
+      authToken: adminToken,
+      metadataFileId: targetMetaFileId
+    }) }
+  }).getContent());
+  assert.equal(ownerUnlockAfterSixDigit.status, 'success');
+  console.log('✓ Six-digit approval number system verified end-to-end.');
+
   // 12. Auto-Lock After 5 Distinct Verified Listens & Anonymous Deduplication
   console.log('--- Step 12: Testing 5-Listener Auto-Lock & Listener Deduplication ---');
   const autoLockUpload = JSON.parse(sandbox.doPost({
@@ -697,8 +1088,8 @@ function runTests() {
   }).getContent());
   assert(!libAfterDel.items.some(it => it.recordingId === 'rec-autolock-01'), 'Deleted item must be removed from cloud library');
   assert(libAfterDel.tombstones.includes('rec-autolock-01'), 'Tombstone must be broadcast to client devices');
-  assert(libAfterDel.answeredQuestionIds.includes('word-autolock-01'), 'Administrator deletion preserves answered history');
-  console.log('✓ Admin authoritative deletion, tombstones, and durable answered history verified.');
+  assert(!libAfterDel.answeredQuestionIds.includes('word-autolock-01'), 'Administrator deletion returns question to available pool when no other contribution answers it');
+  console.log('✓ Admin authoritative deletion, tombstones, and question pool return verified.');
 
   // Test doGet health check (tokens are never accepted in GET URLs)
   const healthGet = JSON.parse(sandbox.doGet({}).getContent());

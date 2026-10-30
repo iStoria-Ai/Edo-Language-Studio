@@ -44,7 +44,8 @@ import {
   normalizeEnglish,
   fetchMoreOnlineVocabulary
 } from './services/vocabularyService';
-import { fetchCommunityLibrary, queueCommunityEdit, syncCommunityEdits, ensureCommunityEditSynced, readCommunityCache, mergeCommunityEntries, readSpellingDrafts, queueCommunitySpelling, syncSpellingDrafts, uploadWrittenContribution, CommunitySnapshot } from './services/communityLibrary';
+import { fetchCommunityLibrary, queueCommunityEdit, syncCommunityEdits, ensureCommunityEditSynced, readCommunityCache, mergeCommunityEntries, getHelpOthersEligibleEntries, readSpellingDrafts, queueCommunitySpelling, syncSpellingDrafts, uploadWrittenContribution, CommunitySnapshot } from './services/communityLibrary';
+import { invalidateSessionAudio } from './services/audioService';
 import { LocalLibrary } from './services/libraryProtection';
 import { SCREEN_BADGE_MAP } from './components/ScreenBadgeHeader';
 import {
@@ -87,6 +88,7 @@ export const App: React.FC = () => {
   const [communityError, setCommunityError] = useState('');
   const [communityBusy, setCommunityBusy] = useState(false);
   const [spellingDrafts, setSpellingDrafts] = useState<Awaited<ReturnType<typeof readSpellingDrafts>>>([]);
+  const [pendingHelpOthersIds, setPendingHelpOthersIds] = useState<Set<string>>(() => new Set());
   const communityInFlight = useRef(false);
   const sharedEntries = mergeCommunityEntries(entries, community?.entries || [], spellingDrafts, community?.tombstones || []);
   async function refreshCommunity() {
@@ -470,17 +472,75 @@ export const App: React.FC = () => {
       : [...entries, entryToSave];
     await persistUpdatedEntries(updated);
 
-    if (existing?.cloudMetadataFileId) {
-      await saveSharedSpelling(entryId, edoText);
+    // If cloud metadata already exists or is known, attach spelling directly to existing metadata
+    const cloudEntry = community?.entries.find(item => item.sourceLessonId === entryId || item.id === entryId);
+    const metadataId = existing?.cloudMetadataFileId || cloudEntry?.cloudMetadataFileId;
+    if (metadataId) {
+      await queueCommunityEdit({ ...entryToSave, cloudMetadataFileId: metadataId, version: cloudEntry?.version || 0 }, { edoText: edoText.trim() });
+      void (async () => {
+        try {
+          await syncCommunityEdits();
+          await refreshCommunity();
+        } catch (err) {
+          console.warn('[TeachEdo] Spelling sync queued:', err);
+        }
+      })();
     }
   };
 
   const handleUpdateLibraryEntry = async (entryId: string, updates: { english?: string; edoText?: string; audioDataUrl?: string; durationSec?: number }) => {
-    const entry = community?.entries.find(item => item.id === entryId);
+    const entry = (community?.entries || []).find(item => item.id === entryId) ||
+      entries.find(item => item.id === entryId);
     if (!entry) throw new Error('This cloud contribution is no longer available.');
     await queueCommunityEdit(entry, updates);
     await refreshCommunity();
-    await ensureCommunityEditSynced(entry.cloudMetadataFileId!);
+    void (async () => {
+      try {
+        await syncCommunityEdits();
+        await refreshCommunity();
+        await refreshLibrary();
+      } catch (err) {
+        console.warn('[EditLesson] Background sync retry queued:', err);
+      }
+    })();
+  };
+
+  const handleQueueHelpOthersWriting = async (entryId: string, text: string) => {
+    const entry = (community?.entries || []).find(item => item.id === entryId) ||
+      entries.find(item => item.id === entryId);
+    if (!entry) throw new Error('Connect to load the current cloud contribution.');
+    if (entry.cloudMetadataFileId) {
+      setPendingHelpOthersIds(prev => new Set(prev).add(entry.cloudMetadataFileId!));
+    }
+    await queueCommunityEdit(entry, { edoText: text.trim() });
+    void (async () => {
+      try {
+        await syncCommunityEdits();
+        await refreshCommunity();
+        await refreshLibrary();
+      } catch (err) {
+        console.warn('[HelpOthers] Background sync retry queued:', err);
+      }
+    })();
+  };
+
+  const handleQueueHelpOthersAudio = async (entryId: string, audioDataUrl: string, durationSec: number) => {
+    const entry = (community?.entries || []).find(item => item.id === entryId) ||
+      entries.find(item => item.id === entryId);
+    if (!entry) throw new Error('This cloud contribution is no longer available.');
+    if (entry.cloudMetadataFileId) {
+      setPendingHelpOthersIds(prev => new Set(prev).add(entry.cloudMetadataFileId!));
+    }
+    await queueCommunityEdit(entry, { audioDataUrl, durationSec });
+    void (async () => {
+      try {
+        await syncCommunityEdits();
+        await refreshCommunity();
+        await refreshLibrary();
+      } catch (err) {
+        console.warn('[HelpOthers] Background sync retry queued:', err);
+      }
+    })();
   };
 
   // Skip Writing in Teach Edo -> Keep Voice as "Needs Writing" (Screen 5 -> Screen 6)
@@ -635,7 +695,12 @@ export const App: React.FC = () => {
     setShowSystemModal(false);
   };
 
-  const stats = computeStudioStats(sharedEntries);
+  const helpOthersEligible = getHelpOthersEligibleEntries(
+    community?.entries || [],
+    community?.tombstones || [],
+    pendingHelpOthersIds
+  );
+  const stats = computeStudioStats(sharedEntries, helpOthersEligible.totalCount);
   const currentScreenNumber = getActiveScreenNumber();
 
   const renderScreenBySection = (
@@ -677,11 +742,12 @@ export const App: React.FC = () => {
         return (
           <HelpOthersScreen
             entries={community?.entries || []}
+            tombstones={community?.tombstones || []}
             communityError={communityError}
             communityCheckedAt={community?.checkedAt}
-            onAttachWritingToEntry={saveSharedSpelling}
+            onAttachWritingToEntry={handleQueueHelpOthersWriting}
             onAttachAudioToEntry={async (id, audioDataUrl, audioDurationSec) => {
-              await handleUpdateLibraryEntry(id, { audioDataUrl, durationSec: audioDurationSec });
+              await handleQueueHelpOthersAudio(id, audioDataUrl, audioDurationSec);
             }}
             onBackToDashboard={() => setActiveSection('dashboard')}
           />
@@ -702,6 +768,10 @@ export const App: React.FC = () => {
             onEditText={saveSharedSpelling}
             onSaveEntry={handleUpdateLibraryEntry}
             onDeleteLesson={async id => {
+              const cloudItem = community?.entries.find(e => e.id === id);
+              if (cloudItem?.cloudAudioFileId) {
+                invalidateSessionAudio(cloudItem.cloudAudioFileId);
+              }
               const prompt = INITIAL_EDO_ENTRIES.find(entry => entry.id === id);
               await persistUpdatedEntries(prompt ? entries.map(entry => entry.id === id ? {
                 ...prompt, edoText: undefined, audioDataUrl: undefined, hasAudio: false,

@@ -10,15 +10,24 @@ import {
   Pencil,
   CheckCircle,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Loader2,
+  RotateCcw
 } from 'lucide-react';
 import { getChildrenAudio } from '../services/childrenLibraryService';
 import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
-import { playAudioRecording, stopActivePlayback, MicrophoneRecorder } from '../services/audioService';
-import { getCommunityAudio, updateOwnedRecordingPermissions } from '../services/communityLibrary';
-import { adminLockEntry, adminUnlockEntry, adminDeleteEntry, recordPlaybackToGateway } from '../services/cloudSyncService';
+import { EdoLetterBar } from '../components/EdoLetterBar';
+import { playAudioRecording, stopActivePlayback, MicrophoneRecorder, invalidateSessionAudio } from '../services/audioService';
+import {
+  getCommunityAudio,
+  updateOwnedRecordingPermissions,
+  readPendingCloudEdits,
+  retryPendingCloudEdit,
+  CloudEditDraft
+} from '../services/communityLibrary';
+import { adminLockEntry, adminUnlockEntry, adminDeleteEntry, adminSetApprovalCode, recordPlaybackToGateway } from '../services/cloudSyncService';
 
 export interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
@@ -30,6 +39,7 @@ export interface LanguageLibraryScreenProps {
   pendingSpellingCount?: number;
   recordings?: any[];
   queueCount?: number;
+  pendingEdits?: CloudEditDraft[];
   onLibraryChanged?: () => Promise<void>;
   onEditText?: (id: string, text: string) => Promise<void>;
   onSaveEntry?: (entryId: string, updates: { english?: string; edoText?: string; audioDataUrl?: string; durationSec?: number }) => Promise<void>;
@@ -85,6 +95,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   entries,
   readOnly = false,
   communityError, communityCheckedAt, communityBusy,
+  pendingEdits: propPendingEdits,
   onLibraryChanged,
   onEditText,
   onSaveEntry,
@@ -96,9 +107,21 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [selectedSnapshot, setSelectedEntry] = useState<EdoEntry | null>(null);
   const selectedEntry = selectedSnapshot ? entries.find(entry => entry.id === selectedSnapshot.id) || null : null;
 
+  // Background cloud saving state per lesson card
+  const [pendingEdits, setPendingEdits] = useState<CloudEditDraft[]>([]);
+  const effectivePendingEdits = propPendingEdits !== undefined ? propPendingEdits : pendingEdits;
+
+  const pendingEditsMap = new Map<string, CloudEditDraft>();
+  for (const draft of effectivePendingEdits) {
+    if (draft.metadataFileId) {
+      pendingEditsMap.set(draft.metadataFileId, draft);
+    }
+  }
+
   // Edit modal state
   const [editEnglish, setEditEnglish] = useState('');
   const [editEdoText, setEditEdoText] = useState('');
+  const editEdoInputRef = useRef<HTMLInputElement | null>(null);
   const [newAudioDataUrl, setNewAudioDataUrl] = useState<string | null>(null);
   const [newAudioDuration, setNewAudioDuration] = useState<number>(0);
   const [isRecordingNewVoice, setIsRecordingNewVoice] = useState(false);
@@ -107,10 +130,15 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalSuccess, setModalSuccess] = useState<string | null>(null);
   const [permissionRenewBusy, setPermissionRenewBusy] = useState(false);
+  const [transientFeedback, setTransientFeedback] = useState<string | null>(null);
+  const feedbackTimerRef = useRef<number | null>(null);
 
-  // Admin lock, unlock, and delete expandable state
+  // Admin lock, unlock, delete, and 6-digit approval code state
   const [showAdminUnlock, setShowAdminUnlock] = useState(false);
   const [showAdminLock, setShowAdminLock] = useState(false);
+  const [adminMode, setAdminMode] = useState<'code' | 'owner'>('code');
+  const [approvalCodeInput, setApprovalCodeInput] = useState('');
+  const [newApprovalCodeInput, setNewApprovalCodeInput] = useState('');
   const [adminTokenInput, setAdminTokenInput] = useState('');
   const [adminUnlockBusy, setAdminUnlockBusy] = useState(false);
   const [adminUnlockError, setAdminUnlockError] = useState<string | null>(null);
@@ -118,6 +146,9 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [adminLockError, setAdminLockError] = useState<string | null>(null);
   const [adminDeleteBusy, setAdminDeleteBusy] = useState(false);
   const [adminDeleteError, setAdminDeleteError] = useState<string | null>(null);
+  const [setCodeBusy, setSetCodeBusy] = useState(false);
+  const [setCodeError, setSetCodeError] = useState<string | null>(null);
+  const [setCodeSuccess, setSetCodeSuccess] = useState<string | null>(null);
 
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -131,13 +162,53 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       childPlaybackRef.current.entryId = null;
       stopActivePlayback();
       if (timerRef.current) window.clearInterval(timerRef.current);
+      if (feedbackTimerRef.current) window.clearTimeout(feedbackTimerRef.current);
       if (recorderRef.current) recorderRef.current.cancel();
     };
   }, []);
 
   useEffect(() => {
+    if (transientFeedback) {
+      if (feedbackTimerRef.current) window.clearTimeout(feedbackTimerRef.current);
+      feedbackTimerRef.current = window.setTimeout(() => {
+        setTransientFeedback(null);
+        feedbackTimerRef.current = null;
+      }, 4000);
+    }
+  }, [transientFeedback]);
+
+  useEffect(() => {
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [searchQuery, activeFilter]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadEdits = async () => {
+      try {
+        const edits = await readPendingCloudEdits();
+        if (isMounted) setPendingEdits(edits);
+      } catch {
+        // Ignore
+      }
+    };
+    void loadEdits();
+    const handleEditsChanged = () => { void loadEdits(); };
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('edo_pending_edits_changed', handleEditsChanged);
+    }
+    return () => {
+      isMounted = false;
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('edo_pending_edits_changed', handleEditsChanged);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (propPendingEdits) {
+      setPendingEdits(propPendingEdits);
+    }
+  }, [propPendingEdits]);
 
   // When opening an entry, initialize edit fields
   const handleOpenEntry = (entry: EdoEntry) => {
@@ -154,10 +225,15 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     setModalSuccess(null);
     setShowAdminUnlock(false);
     setShowAdminLock(false);
+    setAdminMode('code');
+    setApprovalCodeInput('');
+    setNewApprovalCodeInput('');
     setAdminTokenInput('');
     setAdminUnlockError(null);
     setAdminLockError(null);
     setAdminDeleteError(null);
+    setSetCodeError(null);
+    setSetCodeSuccess(null);
   };
 
   const handleCloseModal = () => {
@@ -395,7 +471,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     }
   };
 
-  // Save changes from single edit modal
+  // Save changes from single edit modal: immediately acknowledge, close modal, and save in background
   const handleSaveChanges = async () => {
     if (!selectedEntry) return;
     setModalError(null);
@@ -412,26 +488,122 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       return;
     }
 
-    setBusy(true);
-    try {
-      if (onSaveEntry) {
-        await onSaveEntry(selectedEntry.id, {
+    const targetId = selectedEntry.id;
+    const metaId = selectedEntry.cloudMetadataFileId;
+    const audioDataUrl = newAudioDataUrl || undefined;
+    const durationSec = newAudioDuration || undefined;
+
+    // Immediately close modal & show friendly acknowledgment
+    handleCloseModal();
+    setTransientFeedback(`Thank you! Your changes for "${eng}" were saved locally and are uploading in the background.`);
+
+    // Immediately reflect pending state on this specific card
+    if (metaId) {
+      setPendingEdits(prev => [
+        ...prev.filter(item => item.metadataFileId !== metaId),
+        {
+          id: 'edit-optimistic-' + Date.now(),
+          metadataFileId: metaId,
+          expectedVersion: selectedEntry.version || 0,
+          updates: { english: eng, edoText: edo, audioDataUrl, durationSec }
+        }
+      ]);
+    }
+
+    if (onSaveEntry) {
+      try {
+        await onSaveEntry(targetId, {
           english: eng,
           edoText: edo,
-          audioDataUrl: newAudioDataUrl || undefined,
-          durationSec: newAudioDuration || undefined
+          audioDataUrl,
+          durationSec
         });
-      } else if (onEditText) {
-        await onEditText(selectedEntry.id, edo);
+      } catch (err: any) {
+        console.warn('[EditLesson] Background save queued:', err);
       }
-      setModalSuccess('Changes saved successfully.');
-      window.setTimeout(() => {
-        handleCloseModal();
-      }, 700);
+    } else if (onEditText) {
+      try {
+        await onEditText(targetId, edo);
+      } catch (err: any) {
+        console.warn('[EditLesson] Background edit queued:', err);
+      }
+    }
+  };
+
+  const handleRetryPendingEdit = async (e: React.SyntheticEvent, metadataFileId: string) => {
+    e.stopPropagation();
+    // Immediately clear error & failed flag to show "Saving..." spinner
+    setPendingEdits(prev =>
+      prev.map(item =>
+        item.metadataFileId === metadataFileId
+          ? { ...item, error: undefined, lastAttemptFailed: false, lastErrorMessage: undefined }
+          : item
+      )
+    );
+    try {
+      await retryPendingCloudEdit(metadataFileId);
+      if (onLibraryChanged) await onLibraryChanged();
     } catch (err: any) {
-      setModalError(err?.message || 'Failed to save changes.');
+      console.warn('[LanguageLibrary] Retry edit error:', err);
+      const current = await readPendingCloudEdits();
+      setPendingEdits(current);
+    }
+  };
+
+  // Trusted 6-digit approval code submission (Approve & Lock only)
+  const handleApproveWithCode = async () => {
+    if (!selectedEntry || !selectedEntry.cloudMetadataFileId) return;
+    const code = approvalCodeInput.trim();
+    if (!/^\d{6}$/.test(code)) {
+      setAdminLockError('Please enter the 6-digit approval number.');
+      return;
+    }
+
+    setAdminLockBusy(true);
+    setAdminLockError(null);
+    try {
+      const res = await adminLockEntry(selectedEntry.cloudMetadataFileId, code);
+      if (res.ok) {
+        if (onLibraryChanged) await onLibraryChanged();
+        handleCloseModal();
+      } else {
+        setAdminLockError(res.message || 'Invalid 6-digit approval number.');
+      }
+    } catch (err: any) {
+      setAdminLockError(String(err?.message || err));
     } finally {
-      setBusy(false);
+      setAdminLockBusy(false);
+    }
+  };
+
+  // Owner sets or updates the 6-digit approval number
+  const handleSetApprovalCode = async () => {
+    const token = adminTokenInput.trim();
+    const newCode = newApprovalCodeInput.trim();
+    setSetCodeError(null);
+    setSetCodeSuccess(null);
+    if (!token) {
+      setSetCodeError('Enter owner admin token first.');
+      return;
+    }
+    if (!/^\d{6}$/.test(newCode)) {
+      setSetCodeError('Approval number must be 6 digits.');
+      return;
+    }
+
+    setSetCodeBusy(true);
+    try {
+      const res = await adminSetApprovalCode(token, newCode);
+      if (res.ok) {
+        setSetCodeSuccess('6-digit approval number saved.');
+        setNewApprovalCodeInput('');
+      } else {
+        setSetCodeError(res.message || 'Failed to save 6-digit number.');
+      }
+    } catch (err: any) {
+      setSetCodeError(String(err?.message || err));
+    } finally {
+      setSetCodeBusy(false);
     }
   };
 
@@ -505,6 +677,9 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     try {
       const res = await adminDeleteEntry(selectedEntry.cloudMetadataFileId, token);
       if (res.ok) {
+        if (selectedEntry.cloudAudioFileId) {
+          invalidateSessionAudio(selectedEntry.cloudAudioFileId);
+        }
         if (onLibraryChanged) await onLibraryChanged();
         handleCloseModal();
       } else {
@@ -584,6 +759,17 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
         </div>
       </div>
 
+      {/* Transient save feedback notification */}
+      {transientFeedback && (
+        <div
+          role="status"
+          className="mx-5 mb-2.5 px-3.5 py-2.5 rounded-2xl bg-[#E6F4ED] border border-[#BDE3CF] text-[#157A4C] text-[13px] font-semibold flex items-center gap-2 shadow-xs shrink-0"
+        >
+          <CheckCircle className="w-4 h-4 shrink-0 text-[#157A4C]" />
+          <span className="flex-1 leading-snug">{transientFeedback}</span>
+        </div>
+      )}
+
       {/* Word Cards List — Requirement 4: Small, Compact 2-Line Cards */}
       <div ref={listRef} className="w-full px-5 pb-5 flex-1 overflow-y-auto space-y-2 min-h-0">
         {visibleEntries.map((entry) => {
@@ -597,26 +783,45 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
             (entry.syncStatus === 'synced_to_drive' || entry.isCommunity)
           );
 
+          // Pending cloud edit state for this specific card
+          const pendingEdit = entry.cloudMetadataFileId ? pendingEditsMap.get(entry.cloudMetadataFileId) : undefined;
+          const isPendingSync = Boolean(pendingEdit);
+          const isSyncFailed = Boolean(pendingEdit?.error || pendingEdit?.lastAttemptFailed);
+          const isSaving = isPendingSync && !isSyncFailed;
+
+          const displayEnglish = pendingEdit?.updates.english || entry.english;
+          const displayEdo = pendingEdit?.updates.edoText || entry.edoText;
+
           return (
             <div
               key={entry.id}
               role={readOnly ? 'button' : undefined}
               tabIndex={readOnly ? 0 : undefined}
-              aria-label={readOnly ? `${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${entry.english}` : undefined}
+              aria-label={readOnly ? `${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${displayEnglish}` : undefined}
               aria-pressed={readOnly ? isPlayingThis : undefined}
-              onClick={(event) => { if (readOnly) void handlePlayWordAudio(event, entry); else if (!isLocked) handleOpenEntry(entry); }}
+              onClick={(event) => {
+                if (isSaving) return;
+                if (readOnly) void handlePlayWordAudio(event, entry);
+                else if (!isLocked) handleOpenEntry(entry);
+              }}
               onKeyDown={readOnly ? (event) => {
-                if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+                if (isSaving || event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
                 event.preventDefault();
                 if (!event.repeat) void handlePlayWordAudio(event, entry);
               } : undefined}
-              className="w-full h-[96px] rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition"
+              className={`w-full h-[96px] rounded-2xl border px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition ${
+                isSaving
+                  ? 'bg-[#F9FAFB] border-[#E5E7EB] opacity-60 cursor-not-allowed select-none'
+                  : isSyncFailed
+                  ? 'bg-[#FFF8F8] border-[#FCA5A5]'
+                  : 'bg-white hover:bg-[#FCF9F2] border-[#E6DFCF]'
+              }`}
             >
               <div className="flex flex-1 items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center shrink-0">
                   <WordIllustration
                     id={entry.sourceLessonId || entry.id}
-                    english={entry.english}
+                    english={displayEnglish}
                     illustrationKey={entry.illustrationKey}
                     imageUrl={entry.imageUrl}
                     skipLocalCache={readOnly}
@@ -627,14 +832,26 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 <div className="min-w-0 flex-1 max-h-[74px] overflow-y-auto pr-1">
                   {/* Line 1: English (Full text visible, wraps cleanly) */}
                   <p className="text-[13px] leading-snug font-semibold text-[#1A241D] break-words whitespace-normal select-text">
-                    <span className="text-[#68766E] font-medium text-[13px]">English:</span> {entry.english}
+                    <span className="text-[#68766E] font-medium text-[13px]">English:</span> {displayEnglish}
                   </p>
 
-                  {/* Line 2: Edo (Full spelling visible, with small status dot or lock) */}
+                  {/* Line 2: Edo (Full spelling visible, with small status dot, saving spinner, or lock) */}
                   <p className="text-[13px] leading-snug text-[#157A4C] break-words whitespace-normal mt-0.5 flex items-center gap-1.5 flex-wrap select-text">
                     <span className="text-[#68766E] font-medium text-[13px]">Edo:</span>
-                    <span className="font-bold text-[#1F2922]">{entry.edoText}</span>
-                    {isLocked ? (
+                    <span className="font-bold text-[#1F2922]">{displayEdo}</span>
+                    {isSaving ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#E6EFFC] text-[#1D6CE0]">
+                        <Loader2 className="w-3 h-3 animate-spin shrink-0 text-[#1D6CE0]" />
+                        Saving…
+                      </span>
+                    ) : isSyncFailed ? (
+                      <span
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-[#FDF2F0] text-[#C93B2B]"
+                        title={pendingEdit?.error || pendingEdit?.lastErrorMessage || 'Failed to sync with Google Drive'}
+                      >
+                        Failed to sync
+                      </span>
+                    ) : isLocked ? (
                       <span title="Approved & Protected" className="inline-flex items-center">
                         <Lock className="w-3.5 h-3.5 text-[#157A4C] shrink-0" />
                       </span>
@@ -647,16 +864,35 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 </div>
               </div>
 
-              {/* Action Buttons: Speaker (Listen) and Pencil (Edit) */}
+              {/* Action Buttons: Speaker (Listen) and Pencil (Edit) / Retry */}
               <div className="flex items-center gap-2 shrink-0">
+                {isSyncFailed && entry.cloudMetadataFileId && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleRetryPendingEdit(e, entry.cloudMetadataFileId!)}
+                    aria-label={`Retry syncing ${displayEnglish}`}
+                    title="Retry syncing this lesson to Google Drive"
+                    className="px-2.5 py-1 rounded-lg bg-[#FDF2F0] hover:bg-[#FCE8E6] border border-[#FCA5A5] text-[#C93B2B] text-[12px] font-bold transition flex items-center gap-1 active:scale-95 shadow-xs"
+                  >
+                    <RotateCcw className="w-3 h-3 shrink-0" />
+                    Retry
+                  </button>
+                )}
+
                 {/* Speaker Button — Strictly plays recorded Edo human voice */}
                 <SpeakerControl
-                  type={readOnly ? undefined : 'button'}
-                  onClick={(e) => handlePlayWordAudio(e, entry)}
-                  aria-label={readOnly ? undefined : `${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${entry.english}`}
-                  title={isPlaybackDenied ? 'Playback restricted (tap pencil to renew or replace voice)' : undefined}
+                  type={readOnly || isSaving ? undefined : 'button'}
+                  disabled={isSaving}
+                  onClick={(e) => {
+                    if (isSaving) return;
+                    handlePlayWordAudio(e, entry);
+                  }}
+                  aria-label={readOnly ? undefined : `${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${displayEnglish}`}
+                  title={isSaving ? 'Saving recording to Google Drive…' : isPlaybackDenied ? 'Playback restricted (tap pencil to renew or replace voice)' : undefined}
                   className={`w-10 h-10 rounded-full flex items-center justify-center transition shrink-0 ${
-                    isPlayingThis
+                    isSaving
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-50'
+                      : isPlayingThis
                       ? 'bg-[#157A4C] text-white scale-105 shadow-xs'
                       : isPlaybackDenied
                       ? 'bg-[#FEF3C7] hover:bg-[#FDE68A] text-[#B45309]'
@@ -670,26 +906,38 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 {!readOnly && (!isLocked ? (
                   <button
                     type="button"
+                    disabled={isSaving}
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (isSaving) return;
                       handleOpenEntry(entry);
                     }}
-                    aria-label={`Edit ${entry.english}`}
-                    title="Edit lesson"
-                    className="w-8 h-8 rounded-full bg-[#F4EFE2] hover:bg-[#EAE0CE] text-[#556058] hover:text-[#18241B] flex items-center justify-center transition shrink-0"
+                    aria-label={`Edit ${displayEnglish}`}
+                    title={isSaving ? 'Cannot edit while saving to Google Drive' : 'Edit lesson'}
+                    className={`w-8 h-8 rounded-full flex items-center justify-center transition shrink-0 ${
+                      isSaving
+                        ? 'bg-gray-100 text-gray-300 cursor-not-allowed opacity-40'
+                        : 'bg-[#F4EFE2] hover:bg-[#EAE0CE] text-[#556058] hover:text-[#18241B]'
+                    }`}
                   >
                     <Pencil className="w-3.5 h-3.5" />
                   </button>
                 ) : (
                   <button
                     type="button"
+                    disabled={isSaving}
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (isSaving) return;
                       handleOpenEntry(entry);
                     }}
-                    aria-label={`Protected lesson: ${entry.english}`}
-                    title="Protected lesson (Administrator options)"
-                    className="w-8 h-8 rounded-full bg-[#EBF7EE] text-[#157A4C] flex items-center justify-center transition shrink-0 opacity-80 hover:opacity-100"
+                    aria-label={`Protected lesson: ${displayEnglish}`}
+                    title={isSaving ? 'Cannot edit while saving to Google Drive' : 'Protected lesson (Administrator options)'}
+                    className={`w-8 h-8 rounded-full flex items-center justify-center transition shrink-0 ${
+                      isSaving
+                        ? 'bg-gray-100 text-gray-300 cursor-not-allowed opacity-40'
+                        : 'bg-[#EBF7EE] text-[#157A4C] opacity-80 hover:opacity-100'
+                    }`}
                   >
                     <Lock className="w-3.5 h-3.5" />
                   </button>
@@ -710,16 +958,16 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       {!readOnly && selectedEntry && (
         <div
           onClick={handleCloseModal}
-          className="absolute inset-0 bg-black/40 z-20 flex items-end justify-center p-3"
+          className="absolute inset-0 bg-black/40 z-20 flex items-center justify-center p-3"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-h-[85dvh] overflow-y-auto rounded-3xl bg-[#FAF7F0] border border-[#E0D8C6] p-4.5 shadow-xl flex flex-col gap-3"
+            className="w-full rounded-3xl bg-[#FAF7F0] border border-[#E0D8C6] px-5 py-4 shadow-xl flex flex-col gap-2.5"
           >
             {/* Modal Header */}
             <div className="flex items-center justify-between pb-2 border-b border-[#E6DFCF]">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg overflow-hidden flex items-center justify-center shrink-0">
                   <WordIllustration
                     id={selectedEntry.sourceLessonId || selectedEntry.id}
                     english={selectedEntry.english}
@@ -728,14 +976,15 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                     size="sm"
                   />
                 </div>
-                <h3 className="text-[17px] font-bold text-[#18241B]">
+                <h3 className="text-[17px] font-bold text-[#18241B] leading-tight truncate">
                   {selectedEntry.reviewStatus === 'approved_locked' ? 'Protected Lesson' : 'Edit Lesson'}
                 </h3>
               </div>
               <button
                 type="button"
+                aria-label="Close"
                 onClick={handleCloseModal}
-                className="w-8 h-8 rounded-full bg-[#EFE9DA] flex items-center justify-center text-[#3A453D] hover:bg-[#E2DAC7]"
+                className="w-8 h-8 rounded-full bg-[#EFE9DA] flex items-center justify-center text-[#3A453D] hover:bg-[#E2DAC7] shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -743,22 +992,22 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
 
             {/* Case A: Approved & Locked (Read-Only) */}
             {selectedEntry.reviewStatus === 'approved_locked' ? (
-              <div className="space-y-3">
-                <div className="p-3 bg-[#EBF7EE] border border-[#BDE5C8] rounded-2xl flex items-center gap-2.5">
+              <div className="space-y-2.5">
+                <div className="p-2.5 bg-[#EBF7EE] border border-[#BDE5C8] rounded-2xl flex items-center gap-2.5">
                   <Lock className="w-4 h-4 text-[#157A4C] shrink-0" />
-                  <p className="text-xs text-[#126941] font-semibold leading-relaxed">
-                    This lesson has been approved and locked by an administrator. It is protected and cannot be edited by community users.
+                  <p className="text-xs text-[#126941] font-semibold leading-snug">
+                    This lesson has been approved and locked. It is protected and cannot be edited by ordinary users.
                   </p>
                 </div>
 
-                <div className="bg-white border border-[#E6DFCF] rounded-2xl p-3.5 space-y-2">
+                <div className="bg-white border border-[#E6DFCF] rounded-2xl p-3 space-y-1.5">
                   <div>
                     <span className="text-xs font-semibold text-[#68766E]">English</span>
-                    <p className="text-[15.5px] font-bold text-[#1A241D]">{selectedEntry.english}</p>
+                    <p className="text-[15px] font-bold text-[#1A241D]">{selectedEntry.english}</p>
                   </div>
                   <div>
                     <span className="text-xs font-semibold text-[#68766E]">Edo Spelling</span>
-                    <p className="text-[15.5px] font-bold text-[#157A4C]">{selectedEntry.edoText}</p>
+                    <p className="text-[15px] font-bold text-[#157A4C]">{selectedEntry.edoText}</p>
                   </div>
                 </div>
 
@@ -772,38 +1021,59 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   <span>{playingId === selectedEntry.id ? 'Stop Recorded Edo Voice' : 'Play Recorded Edo Voice'}</span>
                 </button>
 
-                {/* Administrator Unlock Option */}
+                {/* Administrator Unlock & Owner Options */}
                 <div className="pt-2 border-t border-[#E6DFCF]">
                   <button
                     type="button"
                     onClick={() => setShowAdminUnlock(!showAdminUnlock)}
-                    className="text-xs font-semibold text-[#556058] flex items-center gap-1 hover:text-[#1A241D]"
+                    className="w-full py-0.5 text-xs font-semibold text-[#556058] flex items-center justify-between hover:text-[#1A241D]"
                   >
                     <span>Administrator options</span>
                     {showAdminUnlock ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                   </button>
 
                   {showAdminUnlock && (
-                    <div className="mt-2.5 p-3 bg-white border border-[#E6DFCF] rounded-xl space-y-2">
-                      <label htmlFor="admin-unlock-token" className="text-xs font-bold text-[#1A241D]">
-                        Administrator Token
+                    <div className="mt-2 p-2.5 bg-white border border-[#E6DFCF] rounded-xl space-y-2">
+                      <label htmlFor="admin-unlock-token" className="block text-[11px] font-bold text-[#1A241D]">
+                        Owner Administrator Token
                       </label>
                       <input
                         id="admin-unlock-token"
                         type="password"
                         value={adminTokenInput}
                         onChange={(e) => setAdminTokenInput(e.target.value)}
-                        placeholder="Enter admin token"
-                        className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
+                        placeholder="Enter owner admin token"
+                        className="w-full py-1.5 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
                       />
-                      {adminUnlockError && <p className="text-xs text-red-600 font-semibold">{adminUnlockError}</p>}
-                      {adminDeleteError && <p className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
-                      <div className="flex gap-2 pt-1">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={6}
+                          value={newApprovalCodeInput}
+                          onChange={(e) => setNewApprovalCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                          placeholder="Set 6-digit approval code"
+                          className="flex-1 py-1.5 px-2.5 rounded-xl border border-[#DED6C4] text-xs tracking-widest font-mono focus:outline-none focus:border-[#157A4C]"
+                        />
+                        <button
+                          type="button"
+                          disabled={setCodeBusy}
+                          onClick={handleSetApprovalCode}
+                          className="py-1.5 px-3 rounded-xl bg-[#3A453D] hover:bg-[#1C241E] text-white font-bold text-xs shrink-0 disabled:opacity-50"
+                        >
+                          {setCodeBusy ? 'Saving…' : 'Set 6-Digit Code'}
+                        </button>
+                      </div>
+                      {setCodeError && <p className="text-[11px] text-red-600 font-semibold">{setCodeError}</p>}
+                      {setCodeSuccess && <p className="text-[11px] text-[#157A4C] font-semibold">{setCodeSuccess}</p>}
+                      {adminUnlockError && <p className="text-[11px] text-red-600 font-semibold">{adminUnlockError}</p>}
+                      {adminDeleteError && <p className="text-[11px] text-red-600 font-semibold">{adminDeleteError}</p>}
+                      <div className="flex gap-2">
                         <button
                           type="button"
                           disabled={adminUnlockBusy || adminDeleteBusy}
                           onClick={handleAdminUnlock}
-                          className="flex-1 py-2 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-xs disabled:opacity-50"
+                          className="flex-1 py-1.5 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-xs disabled:opacity-50"
                         >
                           {adminUnlockBusy ? 'Unlocking…' : 'Unlock Lesson'}
                         </button>
@@ -811,7 +1081,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                           type="button"
                           disabled={adminUnlockBusy || adminDeleteBusy}
                           onClick={handleAdminDelete}
-                          className="flex-1 py-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
+                          className="flex-1 py-1.5 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
                         >
                           {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
                         </button>
@@ -822,7 +1092,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
               </div>
             ) : (
               /* Case B: Simplified Community Edit Form */
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {/* Field 1: English */}
                 <div>
                   <label htmlFor="edit-english" className="block text-xs font-bold text-[#3A453D] mb-1">
@@ -833,7 +1103,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                     type="text"
                     value={editEnglish}
                     onChange={(e) => setEditEnglish(e.target.value)}
-                    className="w-full py-2 px-3.5 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
+                    className="w-full py-1.5 px-3 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
                   />
                 </div>
 
@@ -844,21 +1114,26 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   </label>
                   <input
                     id="edit-edo"
+                    ref={editEdoInputRef}
                     type="text"
                     value={editEdoText}
                     onChange={(e) => setEditEdoText(e.target.value)}
-                    className="w-full py-2 px-3.5 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
+                    className="w-full py-1.5 px-3 rounded-xl bg-white border border-[#DED6C4] text-[15px] text-[#1C241E] focus:outline-none focus:border-[#157A4C]"
+                  />
+                  {/* Edo letters with cursor insertion */}
+                  <EdoLetterBar
+                    inputRef={editEdoInputRef}
+                    value={editEdoText}
+                    onChange={setEditEdoText}
+                    className="mt-1"
                   />
                 </div>
 
                 {/* Playback Permission Renewal Callout for Older Denied Records */}
                 {selectedEntry.playbackPermission === 'denied' && (
-                  <div className="p-3 bg-[#FEF3C7] border border-[#FCD34D] rounded-2xl text-xs text-[#92400E] space-y-2">
+                  <div className="p-2.5 bg-[#FEF3C7] border border-[#FCD34D] rounded-2xl text-xs text-[#92400E] space-y-1.5">
                     <p className="font-bold">
                       Shared library playback is currently restricted for this recording.
-                    </p>
-                    <p className="leading-relaxed">
-                      Tap below to grant playback permission so everyone can listen, or record a replacement voice.
                     </p>
                     {selectedEntry.cloudMetadataFileId && (
                       <button
@@ -874,7 +1149,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 )}
 
                 {/* Field 3: Voice Pronunciation & Replace Voice */}
-                <div className="p-3 bg-white border border-[#E6DFCF] rounded-2xl space-y-2">
+                <div className="p-2.5 bg-white border border-[#E6DFCF] rounded-2xl space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-[#3A453D]">Voice Pronunciation</span>
                     {newAudioDataUrl ? (
@@ -926,7 +1201,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   </div>
 
                   {newAudioDataUrl && (
-                    <p className="text-[11.5px] text-[#556058] text-center leading-relaxed pt-1 px-1">
+                    <p className="text-[11px] text-[#556058] text-center leading-snug pt-0.5 px-1">
                       By submitting your recording, you agree to share it for listening in the Edo Language Studio Library. Your voice will not be used for AI training.
                     </p>
                   )}
@@ -949,51 +1224,134 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   <span>{busy ? 'Saving Changes…' : 'Save Changes'}</span>
                 </button>
 
-                {/* Administrator Approval Option (Locks contribution permanently) */}
+                {/* Administrator Approval Option (6-digit approval code or owner admin controls) */}
                 {selectedEntry.cloudMetadataFileId && (
                   <div className="pt-2 border-t border-[#E6DFCF]">
                     <button
                       type="button"
                       onClick={() => setShowAdminLock(!showAdminLock)}
-                      className="text-xs font-semibold text-[#556058] flex items-center gap-1 hover:text-[#1A241D]"
+                      className="w-full py-0.5 text-xs font-semibold text-[#556058] flex items-center justify-between hover:text-[#1A241D]"
                     >
                       <span>Administrator options</span>
                       {showAdminLock ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                     </button>
 
                     {showAdminLock && (
-                      <div className="mt-2.5 p-3 bg-white border border-[#E6DFCF] rounded-xl space-y-2">
-                        <label htmlFor="admin-lock-token" className="text-xs font-bold text-[#1A241D]">
-                          Administrator Token
-                        </label>
-                        <input
-                          id="admin-lock-token"
-                          type="password"
-                          value={adminTokenInput}
-                          onChange={(e) => setAdminTokenInput(e.target.value)}
-                          placeholder="Enter admin token"
-                          className="w-full py-2 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
-                        />
-                        {adminLockError && <p className="text-xs text-red-600 font-semibold">{adminLockError}</p>}
-                        {adminDeleteError && <p className="text-xs text-red-600 font-semibold">{adminDeleteError}</p>}
-                        <div className="flex gap-2 pt-1">
+                      <div className="mt-2 p-2.5 bg-white border border-[#E6DFCF] rounded-xl space-y-2">
+                        {/* Compact Mode Switcher: 6-Digit Approval vs Owner Admin */}
+                        <div className="flex rounded-lg bg-[#F3EDE0] p-0.5 text-[11px] font-bold">
                           <button
                             type="button"
-                            disabled={adminLockBusy || adminDeleteBusy}
-                            onClick={handleAdminLock}
-                            className="flex-1 py-2 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs disabled:opacity-50"
+                            onClick={() => {
+                              setAdminMode('code');
+                              setAdminLockError(null);
+                              setAdminDeleteError(null);
+                            }}
+                            className={`flex-1 py-1 rounded-md transition ${
+                              adminMode === 'code'
+                                ? 'bg-white text-[#157A4C] shadow-2xs'
+                                : 'text-[#556058] hover:text-[#1A241D]'
+                            }`}
                           >
-                            {adminLockBusy ? 'Approving…' : 'Approve & Lock'}
+                            6-Digit Approval
                           </button>
                           <button
                             type="button"
-                            disabled={adminLockBusy || adminDeleteBusy}
-                            onClick={handleAdminDelete}
-                            className="flex-1 py-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
+                            onClick={() => {
+                              setAdminMode('owner');
+                              setAdminLockError(null);
+                              setAdminDeleteError(null);
+                            }}
+                            className={`flex-1 py-1 rounded-md transition ${
+                              adminMode === 'owner'
+                                ? 'bg-white text-[#157A4C] shadow-2xs'
+                                : 'text-[#556058] hover:text-[#1A241D]'
+                            }`}
                           >
-                            {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
+                            Owner Admin
                           </button>
                         </div>
+
+                        {adminMode === 'code' ? (
+                          <div className="space-y-1.5">
+                            <label htmlFor="trusted-approval-code" className="block text-[11px] font-bold text-[#1A241D]">
+                              Trusted 6-Digit Approval Number
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                id="trusted-approval-code"
+                                type="text"
+                                inputMode="numeric"
+                                maxLength={6}
+                                value={approvalCodeInput}
+                                onChange={(e) => setApprovalCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                placeholder="6-digit number"
+                                className="flex-1 py-1.5 px-3 rounded-xl border border-[#DED6C4] text-xs tracking-widest font-mono focus:outline-none focus:border-[#157A4C]"
+                              />
+                              <button
+                                type="button"
+                                disabled={adminLockBusy}
+                                onClick={handleApproveWithCode}
+                                className="py-1.5 px-3.5 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs shrink-0 disabled:opacity-50"
+                              >
+                                {adminLockBusy ? 'Approving…' : 'Approve & Lock'}
+                              </button>
+                            </div>
+                            {adminLockError && <p className="text-[11px] text-red-600 font-semibold">{adminLockError}</p>}
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            <input
+                              id="admin-lock-token"
+                              type="password"
+                              value={adminTokenInput}
+                              onChange={(e) => setAdminTokenInput(e.target.value)}
+                              placeholder="Enter owner admin token"
+                              className="w-full py-1.5 px-3 rounded-xl border border-[#DED6C4] text-xs focus:outline-none focus:border-[#157A4C]"
+                            />
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                maxLength={6}
+                                value={newApprovalCodeInput}
+                                onChange={(e) => setNewApprovalCodeInput(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                placeholder="Set 6-digit approval code"
+                                className="flex-1 py-1.5 px-2.5 rounded-xl border border-[#DED6C4] text-xs tracking-widest font-mono focus:outline-none focus:border-[#157A4C]"
+                              />
+                              <button
+                                type="button"
+                                disabled={setCodeBusy}
+                                onClick={handleSetApprovalCode}
+                                className="py-1.5 px-3 rounded-xl bg-[#3A453D] hover:bg-[#1C241E] text-white font-bold text-xs shrink-0 disabled:opacity-50"
+                              >
+                                {setCodeBusy ? 'Saving…' : 'Set 6-Digit Code'}
+                              </button>
+                            </div>
+                            {setCodeError && <p className="text-[11px] text-red-600 font-semibold">{setCodeError}</p>}
+                            {setCodeSuccess && <p className="text-[11px] text-[#157A4C] font-semibold">{setCodeSuccess}</p>}
+                            {adminLockError && <p className="text-[11px] text-red-600 font-semibold">{adminLockError}</p>}
+                            {adminDeleteError && <p className="text-[11px] text-red-600 font-semibold">{adminDeleteError}</p>}
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                disabled={adminLockBusy || adminDeleteBusy}
+                                onClick={handleAdminLock}
+                                className="flex-1 py-1.5 rounded-xl bg-[#157A4C] hover:bg-[#126941] text-white font-bold text-xs disabled:opacity-50"
+                              >
+                                {adminLockBusy ? 'Approving…' : 'Approve & Lock'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={adminLockBusy || adminDeleteBusy}
+                                onClick={handleAdminDelete}
+                                className="flex-1 py-1.5 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] text-white font-bold text-xs disabled:opacity-50"
+                              >
+                                {adminDeleteBusy ? 'Deleting…' : 'Delete from Drive'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

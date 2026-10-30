@@ -10,6 +10,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { StudioHeader } from '../components/StudioHeader';
+import { EdoLetterBar } from '../components/EdoLetterBar';
 import {
   MicrophoneRecorder,
   playAudioRecording,
@@ -45,6 +46,7 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
 
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
+  const edoInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -202,30 +204,20 @@ export const TeachSomethingElseScreen: React.FC<TeachSomethingElseScreenProps> =
 
             <input
               type="text"
+              ref={edoInputRef}
               value={optionalEdoSpelling}
               onChange={(e) => setOptionalEdoSpelling(e.target.value)}
               placeholder="Optional: Edo spelling (if you know it)..."
               className="w-full min-h-[48px] px-4 py-3 rounded-2xl bg-white/95 border border-[#DFD7C5] text-[16px] text-[#1C241E] placeholder-[#8C948E] focus:outline-none focus:border-[#157A4C]"
             />
 
-            {/* Quick Edo letters */}
-            <div className="flex items-center justify-between gap-1 pt-0.5">
-              <span className="text-[11.5px] text-[#5E6A62] font-semibold shrink-0">
-                Edo letters:
-              </span>
-              <div className="flex items-center gap-1 flex-wrap justify-end">
-                {EDO_SPECIAL_CHARS.map((ch) => (
-                  <button
-                    key={ch}
-                    type="button"
-                    onClick={() => setOptionalEdoSpelling((prev) => prev + ch)}
-                    className="px-2 py-0.5 rounded-md bg-[#EFE9DA] hover:bg-[#E2D9C3] text-[#253028] text-[12px] font-bold transition shrink-0"
-                  >
-                    {ch}
-                  </button>
-                ))}
-              </div>
-            </div>
+            {/* Quick Edo letters with cursor insertion */}
+            <EdoLetterBar
+              inputRef={edoInputRef}
+              value={optionalEdoSpelling}
+              onChange={setOptionalEdoSpelling}
+              className="pt-0.5"
+            />
           </div>
 
           {/* Playback Preview Bar (when voice recorded) */}

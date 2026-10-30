@@ -1,6 +1,7 @@
 import starterVocabularyData from '../data/englishVocabulary.json';
 import { EdoEntry, EntryCategory } from '../types/edo';
 import { getVocabularyImageUrl } from './imageService';
+import { INITIAL_EDO_ENTRIES } from './storageService';
 
 const VOCAB_CACHE_KEY = 'edo_online_vocabulary_v1';
 const LAST_FETCH_KEY = 'edo_online_vocab_last_fetch_ts';
@@ -265,6 +266,14 @@ export function getAllVocabularyPrompts(): EdoEntry[] {
   const combined: EdoEntry[] = [];
 
   for (const entry of starter) {
+    const norm = normalizeEnglish(entry.english);
+    if (!seenNormalized.has(norm)) {
+      seenNormalized.add(norm);
+      combined.push(entry);
+    }
+  }
+
+  for (const entry of INITIAL_EDO_ENTRIES) {
     const norm = normalizeEnglish(entry.english);
     if (!seenNormalized.has(norm)) {
       seenNormalized.add(norm);

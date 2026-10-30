@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const bundle = buildSync({
-  stdin: { contents: `export * from './src/services/childrenLibraryService'; export { LanguageLibraryScreen } from './src/screens/LanguageLibraryScreen';`, resolveDir: process.cwd(), loader: 'ts' },
+  stdin: { contents: `export * from './src/services/childrenLibraryService'; export { LanguageLibraryScreen } from './src/screens/LanguageLibraryScreen'; export { HelpOthersScreen } from './src/screens/HelpOthersScreen';`, resolveDir: process.cwd(), loader: 'ts' },
   bundle: true, write: false, platform: 'node', format: 'cjs',
   define: { 'import.meta.env.BASE_URL': '"/Edo-Language-Studio/"' },
   external: ['react', 'react/jsx-runtime', '@capacitor/*']
@@ -253,5 +253,70 @@ const lifecycleBundle = buildSync({
   assert.equal(adultCard.props.tabIndex, undefined);
   assert.equal(adultCard.props.onKeyDown, undefined);
   assert(adultNodes.some(node => node.type === 'button' && node.props['aria-label'] === 'Edit Water'));
-  console.log('PASS: whole-card and speaker activation once; keyboard Enter/Space; immediate stop/switch; stale cloud replies ignored; denied audio blocked; adult card unchanged.');
+
+  // Test Language Library Card Pending State
+  cursor = 0;
+  const testEntries = [lesson, { ...lesson, id: 'cloud-second', english: 'Eye', cloudMetadataFileId: 'meta-second', cloudAudioFileId: 'second' }];
+  const pendingEdits = [
+    {
+      id: 'edit-1',
+      metadataFileId: lesson.cloudMetadataFileId,
+      expectedVersion: 1,
+      updates: { edoText: 'Ame New' }
+    }
+  ];
+  const pendingNodes = walk(mod.exports.LanguageLibraryScreen({ entries: testEntries, readOnly: false, pendingEdits, onBackToDashboard() {} }));
+  const pendingCard = pendingNodes.find(node => node.type === 'div' && node.props.className?.includes('opacity-60'));
+  assert(pendingCard, 'Pending card has reduced opacity (opacity-60)');
+  assert(pendingCard.props.className.includes('bg-[#F9FAFB]'), 'Pending card has grey background');
+  assert(walk(pendingCard).some(n => typeof n.props?.children === 'string' && n.props.children.includes('Saving…') || Array.isArray(n.props?.children) && n.props.children.includes('Saving…')), 'Card displays Saving… indicator');
+
+  // Speaker and Pencil buttons are disabled on saving card
+  const pendingButtons = walk(pendingCard).filter(n => n.type === 'button');
+  const disabledButtons = pendingButtons.filter(b => b.props.disabled === true);
+  assert(disabledButtons.length >= 1, 'Actions disabled on saving card');
+
+  // Unrelated card (cloud-second) does not have opacity-60
+  const secondCard = pendingNodes.find(node => node.type === 'div' && node.props.className?.includes('h-[96px]') && !node.props.className?.includes('opacity-60'));
+  assert(secondCard, 'Unrelated card is not greyed out');
+
+  // Test Failed sync card state
+  cursor = 0;
+  const failedEdits = [
+    {
+      id: 'edit-2',
+      metadataFileId: lesson.cloudMetadataFileId,
+      expectedVersion: 1,
+      updates: { edoText: 'Ame Error' },
+      lastAttemptFailed: true
+    }
+  ];
+  const failedNodes = walk(mod.exports.LanguageLibraryScreen({ entries: testEntries, readOnly: false, pendingEdits: failedEdits, onBackToDashboard() {} }));
+  assert(failedNodes.some(n => typeof n.props?.children === 'string' && n.props.children.includes('Failed to sync') || Array.isArray(n.props?.children) && n.props.children.includes('Failed to sync')), 'Shows Failed to sync badge');
+  assert(failedNodes.some(n => n.type === 'button' && (typeof n.props?.children === 'string' && n.props.children.includes('Retry') || Array.isArray(n.props?.children) && n.props.children.includes('Retry'))), 'Shows Retry button on sync failure');
+
+  // Test Help Others Play Button immediate visual states
+  slots.length = 0;
+  cursor = 0;
+  const helpEntries = [
+    {
+      id: 'cloud-help-1',
+      recordingId: 'rec-1',
+      english: 'Water',
+      cloudMetadataFileId: 'meta-help-1',
+      cloudAudioFileId: 'audio-help-1',
+      hasAudio: true,
+      isCommunity: true
+    }
+  ];
+  const helpNodes = walk(mod.exports.HelpOthersScreen({
+    entries: helpEntries,
+    onAttachWritingToEntry: async () => {},
+    onAttachAudioToEntry: async () => {},
+    onBackToDashboard: () => {}
+  }));
+  const playBtn = helpNodes.find(n => n.type === 'button' && n.props['aria-label'] === 'Play existing Edo recording');
+  assert(playBtn, 'Help Others displays Play button for existing audio');
+
+  console.log('PASS: whole-card and speaker activation once; keyboard Enter/Space; immediate stop/switch; stale cloud replies ignored; denied audio blocked; adult card unchanged; card pending and retry states verified; help others play button verified.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

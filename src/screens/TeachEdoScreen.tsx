@@ -12,11 +12,19 @@ import {
   Sparkles,
   AlertCircle
 } from 'lucide-react';
-import { fetchAnsweredQuestions, nextUnansweredQuestion } from '../services/communityLibrary';
+import {
+  fetchAnsweredQuestions,
+  nextUnansweredQuestion,
+  isQuestionAnswered,
+  shuffleQuestions,
+  buildCuratedSessionQueue,
+  normalizeQuestion
+} from '../services/communityLibrary';
 import { lessonProgress } from '../services/storageService';
 import { EdoEntry, TeachStepState } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
+import { EdoLetterBar } from '../components/EdoLetterBar';
 import {
   speakEnglishPrompt,
   stopEnglishPrompt,
@@ -60,8 +68,12 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   onFinishForNow,
   onStepStateChange
 }) => {
-  const [questionIndex, setQuestionIndex] = useState(() => Math.max(0, questions.findIndex(q => !q.hasAudio)));
   const [answeredIds, setAnsweredIds] = useState<Set<string> | null>(null);
+  const [sessionQueue, setSessionQueue] = useState<string[]>([]);
+  const [sessionCompletedIds, setSessionCompletedIds] = useState<Set<string>>(() => new Set());
+  const [currentQuestionId, setCurrentQuestionId] = useState<string | null>(null);
+  const queueInitializedRef = useRef(false);
+
   const [sharedError, setSharedError] = useState('');
   const [retryShared, setRetryShared] = useState(0);
   const questionCheckLock = useRef(false);
@@ -92,12 +104,56 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   const stopPlaybackRef = useRef<(() => void) | null>(null);
   const activeObjectUrlRef = useRef<string | undefined>(undefined);
   const writingActionsRef = useRef<HTMLDivElement | null>(null);
+  const recordedInputRef = useRef<HTMLInputElement | null>(null);
+  const writingInputRef = useRef<HTMLInputElement | null>(null);
 
   const confirmLeave = () => !isRecording && (!recordedAudioUrl || stepState === 'completed' || window.confirm('Discard this unsaved recording? Save it first to keep it.'));
 
-  const totalQuestions = Math.max(1, questions.length);
-  const safeIndex = questions.length > 0 ? questionIndex % questions.length : 0;
-  const currentQuestion = questions[safeIndex] || questions[0];
+  // Combine remote answered IDs with local session completed IDs
+  const effectiveAnsweredIds = new Set<string>(answeredIds || []);
+  for (const id of sessionCompletedIds) {
+    effectiveAnsweredIds.add(id);
+  }
+
+  // Active question resolution from session queue with safe fallback
+  const fallbackQuestion: EdoEntry = questions[0] || {
+    id: 'starter_word_water',
+    english: 'Water',
+    category: 'Daily Living',
+    illustrationKey: 'water'
+  };
+
+  let currentQuestion: EdoEntry = (currentQuestionId ? questions.find(q => q.id === currentQuestionId) : null) || fallbackQuestion;
+  if (isQuestionAnswered(currentQuestion, effectiveAnsweredIds) && sessionQueue.length > 0) {
+    const nextEligibleId = sessionQueue.find(id => {
+      const q = questions.find(item => item.id === id);
+      return q && !isQuestionAnswered(q, effectiveAnsweredIds);
+    });
+    if (nextEligibleId && nextEligibleId !== currentQuestionId) {
+      const found = questions.find(q => q.id === nextEligibleId);
+      if (found) currentQuestion = found;
+    }
+  }
+  if (isQuestionAnswered(currentQuestion, effectiveAnsweredIds)) {
+    const anyUnanswered = questions.find(q => !isQuestionAnswered(q, effectiveAnsweredIds));
+    if (anyUnanswered) {
+      currentQuestion = anyUnanswered;
+    }
+  }
+
+  // Initialize curated session queue on mount or when questions arrive
+  useEffect(() => {
+    if (!queueInitializedRef.current && questions.length > 0) {
+      const eligible = questions.filter(q => !isQuestionAnswered(q, effectiveAnsweredIds));
+      if (eligible.length > 0) {
+        queueInitializedRef.current = true;
+        const curated = buildCuratedSessionQueue(questions, effectiveAnsweredIds);
+        const queueIds = curated.map(q => q.id);
+        setSessionQueue(queueIds);
+        setCurrentQuestionId(queueIds[0] || null);
+      }
+    }
+  }, [questions, answeredIds]);
 
   useEffect(() => {
     let active = true;
@@ -122,10 +178,17 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
   useEffect(() => {
     if (cloudAnsweredIds) setAnsweredIds(previous => new Set([...(previous || []), ...cloudAnsweredIds, ...(cloudAnsweredEnglish || []).map(text => 'english:' + text)]));
   }, [cloudAnsweredIds, cloudAnsweredEnglish]);
-  const availableIndex = answeredIds ? nextUnansweredQuestion(questions, answeredIds, safeIndex) : -1;
   useEffect(() => {
-    if (answeredIds && stepState === 'prompt' && !isRecording && !recordedAudioUrl && availableIndex >= 0 && availableIndex !== safeIndex) setQuestionIndex(availableIndex);
-  }, [answeredIds, availableIndex, safeIndex, stepState, isRecording, recordedAudioUrl]);
+    if (answeredIds && stepState === 'prompt' && !isRecording && !recordedAudioUrl) {
+      if (!currentQuestionId || (currentQuestion && isQuestionAnswered(currentQuestion, effectiveAnsweredIds))) {
+        const nextId = sessionQueue.find(id => {
+          const q = questions.find(item => item.id === id);
+          return q && !isQuestionAnswered(q, effectiveAnsweredIds);
+        });
+        if (nextId) setCurrentQuestionId(nextId);
+      }
+    }
+  }, [answeredIds, currentQuestionId, stepState, isRecording, recordedAudioUrl]);
 
   // Sync external step state if controlled in dev preview mode
   useEffect(() => {
@@ -333,6 +396,13 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
       await onSaveVoiceContribution(currentQuestion.id, recordedAudioUrl, recordedDuration, writtenText.trim(), true);
       setWritingError(null);
       setSavedModeNote(writtenText.trim() ? 'complete' : 'voice_only');
+
+      // Immediately remove completed question from available pool
+      const savedId = currentQuestion.id;
+      const savedEng = 'english:' + normalizeQuestion(currentQuestion.english);
+      setSessionCompletedIds(prev => new Set([...prev, savedId, savedEng]));
+      setSessionQueue(prev => prev.filter(id => id !== savedId));
+
       updateStep('completed');
     } catch (error) { setRecordingError(error instanceof Error ? error.message : 'Unable to save. Please try again.'); }
     finally { saveLock.current = false; setIsSaving(false); }
@@ -379,17 +449,38 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
     if (wasSkipped) {
       setSkipFeedback('No problem! Let’s try another word.');
       window.setTimeout(() => setSkipFeedback(null), 2600);
+
+      // Move skipped question toward the end of the question queue
+      if (currentQuestionId) {
+        setSessionQueue(prev => {
+          const remaining = prev.filter(id => id !== currentQuestionId);
+          const nextId = remaining.find(id => {
+            const q = questions.find(item => item.id === id);
+            return q && !isQuestionAnswered(q, effectiveAnsweredIds);
+          }) || currentQuestionId;
+          setCurrentQuestionId(nextId);
+          return [...remaining, currentQuestionId];
+        });
+      }
     } else {
       setSkipFeedback(null);
+      // Advance to next unanswered question in queue
+      if (currentQuestionId) {
+        setSessionQueue(prev => {
+          const remaining = prev.filter(id => id !== currentQuestionId);
+          const nextId = remaining.find(id => {
+            const q = questions.find(item => item.id === id);
+            return q && !isQuestionAnswered(q, effectiveAnsweredIds);
+          }) || null;
+          setCurrentQuestionId(nextId);
+          return remaining;
+        });
+      }
     }
-    setQuestionIndex(prev => {
-      const next = nextUnansweredQuestion(questions, answeredIds || new Set(), (prev + 1) % Math.max(1, questions.length));
-      return next >= 0 ? next : prev;
-    });
     updateStep('prompt');
   };
 
-  if (stepState === 'prompt' && !isRecording && !recordedAudioUrl && (!answeredIds || availableIndex < 0 || availableIndex !== safeIndex)) {
+  if (stepState === 'prompt' && !isRecording && !recordedAudioUrl && (!answeredIds || !currentQuestion)) {
     return (
       <div className="edo-screen">
         <StudioHeader theme="green" sectionLabel="Teach Edo" rightAction="close" onRightAction={onFinishForNow} />
@@ -640,7 +731,20 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
               </div>
 
               <label className="text-sm font-semibold" htmlFor="recorded-edo-text">Edo translation (optional)</label>
-              <input id="recorded-edo-text" className="edo-input" value={writtenText} onChange={event => setWrittenText(event.target.value)} placeholder="Type Edo translation, or leave empty" />
+              <input
+                id="recorded-edo-text"
+                ref={recordedInputRef}
+                className="edo-input"
+                value={writtenText}
+                onChange={event => setWrittenText(event.target.value)}
+                placeholder="Type Edo translation, or leave empty"
+              />
+              <EdoLetterBar
+                inputRef={recordedInputRef}
+                value={writtenText}
+                onChange={setWrittenText}
+                className="mt-1.5 mb-1"
+              />
               <div className="w-full flex flex-col gap-2.5 pt-0.5">
                 {/* Record Again Button */}
                 <button
@@ -705,6 +809,8 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
                 {/* Text Input for Edo Spelling */}
                 <div className="w-full">
                   <input
+                    id="spelling-answer"
+                    ref={writingInputRef}
                     type="text"
                     value={writtenText}
                     onChange={(e) => {
@@ -723,27 +829,16 @@ export const TeachEdoScreen: React.FC<TeachEdoScreenProps> = ({
                     className="edo-input focus:border-[#157A4C] focus:ring-2 focus:ring-[#157A4C]/20"
                   />
 
-                  {/* Helpful Edo characters bar */}
-                  <div className="flex items-center justify-between gap-1 mt-2">
-                    <span className="text-[11.5px] text-[#5E6A62] font-semibold shrink-0">
-                      Edo letters:
-                    </span>
-                    <div className="flex items-center gap-1 flex-wrap justify-end">
-                      {EDO_SPECIAL_CHARS.map((ch) => (
-                        <button
-                          key={ch}
-                          type="button"
-                          onClick={() => {
-                            setWrittenText((prev) => prev + ch);
-                            if (writingError) setWritingError(null);
-                          }}
-                          className="px-2 py-0.5 rounded-md bg-[#EFE9DA] hover:bg-[#E2D9C3] text-[#253028] text-[12px] font-bold transition shrink-0"
-                        >
-                          {ch}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  {/* Helpful Edo characters bar with cursor insertion */}
+                  <EdoLetterBar
+                    inputRef={writingInputRef}
+                    value={writtenText}
+                    onChange={(next) => {
+                      setWrittenText(next);
+                      if (writingError) setWritingError(null);
+                    }}
+                    className="mt-2"
+                  />
                 </div>
               </div>
 

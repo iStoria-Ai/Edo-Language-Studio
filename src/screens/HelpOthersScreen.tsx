@@ -7,21 +7,25 @@ import {
   Mic,
   Square,
   FileEdit,
-  CheckCircle2
+  CheckCircle2,
+  Loader2
 } from 'lucide-react';
-import { getCommunityAudio } from '../services/communityLibrary';
+import { getCommunityAudio, getHelpOthersEligibleEntries } from '../services/communityLibrary';
 import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import {
   playAudioRecording,
   stopActivePlayback,
   formatDuration,
-  MicrophoneRecorder
+  MicrophoneRecorder,
+  getCachedSessionAudio
 } from '../services/audioService';
 import { WordIllustration } from '../components/WordIllustration';
+import { EdoLetterBar } from '../components/EdoLetterBar';
 
 interface HelpOthersScreenProps {
   entries: EdoEntry[];
+  tombstones?: string[];
   communityError?: string;
   communityCheckedAt?: string;
   onAttachWritingToEntry: (entryId: string, edoText: string) => Promise<void>;
@@ -37,7 +41,10 @@ interface HelpOthersScreenProps {
 const EDO_SPECIAL_CHARS = ['ẹ', 'ọ', 'vb', 'gh', 'kh', 'mw', 'rh'];
 
 export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
-  entries, communityError, communityCheckedAt,
+  entries,
+  tombstones = [],
+  communityError,
+  communityCheckedAt,
   onAttachWritingToEntry,
   onAttachAudioToEntry,
   onBackToDashboard
@@ -46,9 +53,12 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [writtenAnswer, setWrittenAnswer] = useState('');
   const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submittedIds, setSubmittedIds] = useState<Set<string>>(() => new Set());
 
   // Audio playback state
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoadingAudio, setIsLoadingAudio] = useState(false);
   const [playbackSec, setPlaybackSec] = useState(0);
 
   // Audio recording state (for "Needs Voice" mode)
@@ -59,34 +69,32 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
 
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
+  const writingInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Help Others shows only genuinely incomplete cloud lessons backed by Google Drive
-  const needsWritingList = entries.filter((e) => {
-    if (e.isSampleData) return false;
-    if (!e.cloudMetadataFileId) return false;
-    const hasVoice = Boolean(e.cloudAudioFileId || (e.hasAudio && e.isCommunity));
-    if (!hasVoice) return false;
-    const hasSpelling = Boolean(e.edoText && e.edoText.trim().length > 0);
-    return !hasSpelling;
-  });
-  const needsAudioList = entries.filter((e) => {
-    if (e.isSampleData) return false;
-    if (!e.cloudMetadataFileId) return false;
-    const hasSpelling = Boolean(e.edoText && e.edoText.trim().length > 0);
-    if (!hasSpelling) return false;
-    const hasVoice = Boolean(e.cloudAudioFileId || (e.hasAudio && e.isCommunity));
-    return !hasVoice;
-  });
+  // Use authoritative Help Others eligibility calculation
+  const eligible = getHelpOthersEligibleEntries(entries, tombstones, submittedIds);
+  const needsWritingList = eligible.needsWritingList;
+  const needsAudioList = eligible.needsAudioList;
 
   const activeList = helpMode === 'write' ? needsWritingList : needsAudioList;
-  const currentItem = activeList[currentIndex % Math.max(1, activeList.length)];
+  const safeIndex = activeList.length > 0 ? currentIndex % activeList.length : 0;
+  const currentItem = activeList[safeIndex];
 
   useEffect(() => {
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
       stopActivePlayback();
+      setIsLoadingAudio(false);
+      setIsPlaying(false);
     };
   }, []);
+
+  useEffect(() => {
+    stopActivePlayback();
+    setIsLoadingAudio(false);
+    setIsPlaying(false);
+    setPlaybackSec(0);
+  }, [currentIndex, helpMode]);
 
   const showTransientMessage = (msg: string) => {
     setFeedbackBanner(msg);
@@ -98,36 +106,98 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
     if (isPlaying) {
       stopActivePlayback();
       setIsPlaying(false);
+      setIsLoadingAudio(false);
       return;
     }
+    if (isLoadingAudio) return;
+
     const duration = currentItem.audioDurationSec || 4;
     let audio: string;
-    try { audio = currentItem.audioDataUrl || await getCommunityAudio(currentItem); }
-    catch (error) { showTransientMessage(String(error)); return; }
-    playAudioRecording(audio, duration, (sec, playing) => {
-      setPlaybackSec(sec);
-      setIsPlaying(playing);
-    });
+
+    // If audio is not yet cached locally or in session memory, show loading indicator immediately
+    const cacheKey = currentItem.cloudAudioFileId || '';
+    const hasCachedAudio = Boolean(currentItem.audioDataUrl || (cacheKey && getCachedSessionAudio(cacheKey)));
+    if (!hasCachedAudio) {
+      setIsLoadingAudio(true);
+    }
+
+    try {
+      audio = currentItem.audioDataUrl || await getCommunityAudio(currentItem);
+    } catch (error) {
+      setIsLoadingAudio(false);
+      setIsPlaying(false);
+      showTransientMessage(String(error || 'Could not load audio recording.'));
+      return;
+    }
+
+    // Audio is ready to play: clear loading indicator and start playback
+    setIsLoadingAudio(false);
+    setIsPlaying(true);
+    playAudioRecording(
+      audio,
+      duration,
+      (sec, playing) => {
+        setPlaybackSec(sec);
+        setIsPlaying(playing);
+        if (!playing) {
+          setIsLoadingAudio(false);
+        }
+      },
+      {
+        allowDemoFallback: false,
+        onError: (err) => {
+          setIsPlaying(false);
+          setIsLoadingAudio(false);
+          showTransientMessage(err || 'Unable to play this audio recording.');
+        }
+      }
+    );
   };
 
   const handleSaveWriting = async () => {
-    if (!currentItem) return;
+    if (!currentItem || isSubmitting) return;
     const trimmed = writtenAnswer.trim();
     if (!trimmed) {
       showTransientMessage('Please type the Edo writing or tap "Skip this" if unsure.');
       return;
     }
+    setIsSubmitting(true);
     stopActivePlayback();
+    setIsLoadingAudio(false);
     setIsPlaying(false);
-    try { await onAttachWritingToEntry(currentItem.id, trimmed); }
-    catch (error) { showTransientMessage(String(error)); return; }
+    const targetItem = currentItem;
+    const savedEnglish = targetItem.english;
+
+    // Immediately remove from screen view & prevent duplicate submission
+    setSubmittedIds((prev) => {
+      const next = new Set(prev);
+      if (targetItem.id) next.add(targetItem.id);
+      if (targetItem.cloudMetadataFileId) next.add(targetItem.cloudMetadataFileId);
+      return next;
+    });
+
+    // Reset input state immediately
     setWrittenAnswer('');
-    showTransientMessage(`Edo writing saved for "${currentItem.english}". Contribution completed and moved to the Library.`);
-    setCurrentIndex(0);
+
+    // Immediate acknowledgment with exact required phrasing
+    showTransientMessage(
+      `Thank you! Your Edo contribution for "${savedEnglish}" was saved locally and is uploading in the background.`
+    );
+
+    // Save locally and trigger background upload without blocking UI
+    try {
+      await onAttachWritingToEntry(targetItem.id, trimmed);
+    } catch (error) {
+      console.warn('[HelpOthers] Local save warning:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSkipItem = () => {
+    if (isSubmitting) return;
     stopActivePlayback();
+    setIsLoadingAudio(false);
     setIsPlaying(false);
     setWrittenAnswer('');
     setCapturedAudioUrl(undefined);
@@ -136,8 +206,10 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   };
 
   const handleToggleRecordForWrittenEntry = async () => {
+    if (isSubmitting) return;
     if (!isRecording) {
       stopActivePlayback();
+      setIsLoadingAudio(false);
       const recorder = new MicrophoneRecorder();
       recorderRef.current = recorder;
       const startRes = await recorder.start();
@@ -191,14 +263,41 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
   };
 
   const handleSaveRecordedAudioForWrittenEntry = async () => {
-    if (!currentItem || !capturedAudioUrl) return;
+    if (!currentItem || !capturedAudioUrl || isSubmitting) return;
+    setIsSubmitting(true);
     stopActivePlayback();
+    setIsLoadingAudio(false);
     setIsPlaying(false);
-    try { await onAttachAudioToEntry(currentItem.id, capturedAudioUrl, capturedDuration, true); }
-    catch (error) { showTransientMessage(String(error)); return; }
+    const targetItem = currentItem;
+    const savedEnglish = targetItem.english;
+    const audioUrl = capturedAudioUrl;
+    const duration = capturedDuration;
+
+    // Immediately remove from screen view & prevent duplicate submission
+    setSubmittedIds((prev) => {
+      const next = new Set(prev);
+      if (targetItem.id) next.add(targetItem.id);
+      if (targetItem.cloudMetadataFileId) next.add(targetItem.cloudMetadataFileId);
+      return next;
+    });
+
+    // Reset audio state immediately
     setCapturedAudioUrl(undefined);
-    showTransientMessage(`Thank you! Added Edo voice recording for "${currentItem.english}".`);
-    setCurrentIndex(0);
+    setRecordSec(0);
+
+    // Immediate acknowledgment with exact required phrasing
+    showTransientMessage(
+      `Thank you! Your Edo contribution for "${savedEnglish}" was saved locally and is uploading in the background.`
+    );
+
+    // Save locally and trigger background upload without blocking UI
+    try {
+      await onAttachAudioToEntry(targetItem.id, audioUrl, duration, true);
+    } catch (error) {
+      console.warn('[HelpOthers] Local save warning:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -267,9 +366,16 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
             <h2 className="text-[21px] font-bold text-[#1C241E]">
               {communityError || !communityCheckedAt ? "Waiting for the shared collection" : "All caught up in this queue!"}
             </h2>
-            <p className="text-[15px] text-[#556058] mt-1.5">
+            <p className="text-[15px] text-[#556058] mt-1.5 mb-6">
               Switch tabs above or teach a new word in Teach Edo.
             </p>
+            <button
+              type="button"
+              onClick={onBackToDashboard}
+              className="px-6 py-2.5 rounded-xl bg-[#1D6CE0] hover:bg-[#1558BD] text-white text-[14px] font-bold shadow-sm transition"
+            >
+              Return to Dashboard
+            </button>
           </div>
         ) : helpMode === 'write' ? (
           /* MODE 1: SOMEONE HAS ALREADY RECORDED THIS WORD -> NEEDS WRITING */
@@ -306,10 +412,19 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
                 <button
                   type="button"
                   onClick={handlePlayExistingAudio}
-                  aria-label="Play existing Edo recording"
-                  className="w-12 h-12 rounded-full bg-[#1D6CE0] hover:bg-[#1558BD] text-white flex items-center justify-center shrink-0 shadow-sm active:scale-95 transition"
+                  disabled={isLoadingAudio}
+                  aria-label={
+                    isLoadingAudio
+                      ? 'Loading audio recording'
+                      : isPlaying
+                      ? 'Pause audio'
+                      : 'Play existing Edo recording'
+                  }
+                  className="w-12 h-12 rounded-full bg-[#1D6CE0] hover:bg-[#1558BD] text-white flex items-center justify-center shrink-0 shadow-sm active:scale-95 transition disabled:opacity-90"
                 >
-                  {isPlaying ? (
+                  {isLoadingAudio ? (
+                    <Loader2 className="w-5 h-5 text-white animate-spin" />
+                  ) : isPlaying ? (
                     <Pause className="w-5 h-5 fill-white" />
                   ) : (
                     <Play className="w-5 h-5 fill-white ml-0.5" />
@@ -324,7 +439,11 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
                         key={idx}
                         style={{ height: `${heightPct}%` }}
                         className={`w-1 rounded-full ${
-                          isPlaying ? 'bg-[#1D6CE0] animate-pulse' : 'bg-[#3B82F6]/80'
+                          isLoadingAudio
+                            ? 'bg-[#3B82F6]/50 animate-pulse'
+                            : isPlaying
+                            ? 'bg-[#1D6CE0] animate-pulse'
+                            : 'bg-[#3B82F6]/80'
                         }`}
                       />
                     )
@@ -332,7 +451,9 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
                 </div>
 
                 <span className="text-[13px] font-bold text-[#1E3A68] shrink-0">
-                  {formatDuration(playbackSec)} / {formatDuration(currentItem.audioDurationSec || 4)}
+                  {isLoadingAudio
+                    ? 'Loading…'
+                    : `${formatDuration(playbackSec)} / ${formatDuration(currentItem.audioDurationSec || 4)}`}
                 </span>
               </div>
 
@@ -343,30 +464,20 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
                 </label>
                 <input
                   type="text"
+                  ref={writingInputRef}
                   value={writtenAnswer}
                   onChange={(e) => setWrittenAnswer(e.target.value)}
                   placeholder="Type the Edo words you hear..."
                   className="edo-input focus:border-[#1D6CE0] focus:ring-2 focus:ring-[#1D6CE0]/20"
                 />
 
-                {/* Quick Edo letters */}
-                <div className="flex items-center justify-between gap-1 mt-2">
-                  <span className="text-[11.5px] text-[#5E6A62] font-semibold shrink-0">
-                    Edo letters:
-                  </span>
-                  <div className="flex items-center gap-1 flex-wrap justify-end">
-                    {EDO_SPECIAL_CHARS.map((ch) => (
-                      <button
-                        key={ch}
-                        type="button"
-                        onClick={() => setWrittenAnswer((prev) => prev + ch)}
-                        className="px-2 py-0.5 rounded-md bg-[#EFE9DA] hover:bg-[#E2D9C3] text-[#253028] text-[12px] font-bold transition shrink-0"
-                      >
-                        {ch}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                {/* Quick Edo letters with cursor insertion */}
+                <EdoLetterBar
+                  inputRef={writingInputRef}
+                  value={writtenAnswer}
+                  onChange={setWrittenAnswer}
+                  className="mt-2"
+                />
               </div>
             </div>
 
@@ -374,17 +485,19 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
             <div className="flex flex-col gap-2.5 pt-2">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={handleSaveWriting}
-                className="edo-primary-btn bg-[#157A4C] hover:bg-[#11663F] text-white"
+                className="edo-primary-btn bg-[#157A4C] hover:bg-[#11663F] text-white disabled:opacity-50"
               >
-                <span>Save and continue</span>
+                <span>{isSubmitting ? 'Saving…' : 'Save and continue'}</span>
                 <ArrowRight className="w-5 h-5 stroke-[2.5]" />
               </button>
 
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={handleSkipItem}
-                className="edo-secondary-btn"
+                className="edo-secondary-btn disabled:opacity-50"
               >
                 <span>Skip this (I can&apos;t write it)</span>
               </button>
@@ -455,18 +568,19 @@ export const HelpOthersScreen: React.FC<HelpOthersScreenProps> = ({
               )}
               <button
                 type="button"
-                disabled={!capturedAudioUrl}
+                disabled={!capturedAudioUrl || isSubmitting}
                 onClick={handleSaveRecordedAudioForWrittenEntry}
                 className="edo-primary-btn bg-[#1D6CE0] hover:bg-[#1658B8] disabled:opacity-45 text-white"
               >
-                <span>Save Pronunciation</span>
+                <span>{isSubmitting ? 'Saving…' : 'Save Pronunciation'}</span>
                 <ArrowRight className="w-5 h-5 stroke-[2.5]" />
               </button>
 
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={handleSkipItem}
-                className="edo-secondary-btn"
+                className="edo-secondary-btn disabled:opacity-50"
               >
                 <span>Skip this</span>
               </button>

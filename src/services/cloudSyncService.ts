@@ -604,13 +604,15 @@ export async function submitSpellingToGateway(params: {
 
 export async function adminLockEntry(
   metadataFileId: string,
-  adminToken: string,
+  credential: string,
   url = getGatewayUrl()
 ): Promise<{ ok: boolean; status: string; message: string }> {
   try {
+    const trimmed = credential.trim();
     const payload = {
       action: 'admin_lock_entry',
-      authToken: adminToken,
+      authToken: trimmed,
+      approvalCode: trimmed,
       metadataFileId: metadataFileId
     };
     const response = await fetch(url, {
@@ -628,6 +630,38 @@ export async function adminLockEntry(
       ok: data.status === 'success',
       status: data.status,
       message: data.message || (data.status === 'success' ? 'Lesson approved and locked successfully' : 'Failed to lock lesson')
+    };
+  } catch (err: any) {
+    return { ok: false, status: 'error', message: String(err?.message || err) };
+  }
+}
+
+export async function adminSetApprovalCode(
+  adminToken: string,
+  approvalCode: string,
+  url = getGatewayUrl()
+): Promise<{ ok: boolean; status: string; message: string }> {
+  try {
+    const payload = {
+      action: 'admin_set_approval_code',
+      authToken: adminToken.trim(),
+      approvalCode: approvalCode.trim()
+    };
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+      mode: 'cors'
+    });
+    if (!response.ok) {
+      return { ok: false, status: 'error', message: `Gateway HTTP ${response.status}` };
+    }
+    const data = await response.json();
+    return {
+      ok: data.status === 'success',
+      status: data.status,
+      message: data.message || (data.status === 'success' ? 'Six-digit approval number updated' : 'Failed to update approval number')
     };
   } catch (err: any) {
     return { ok: false, status: 'error', message: String(err?.message || err) };
