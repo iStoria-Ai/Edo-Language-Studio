@@ -122,9 +122,13 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const recorderRef = useRef<MicrophoneRecorder | null>(null);
   const timerRef = useRef<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const childPlaybackRef = useRef({ request: 0, entryId: null as string | null });
+  const SpeakerControl = readOnly ? 'span' : 'button';
 
   useEffect(() => {
     return () => {
+      childPlaybackRef.current.request++;
+      childPlaybackRef.current.entryId = null;
       stopActivePlayback();
       if (timerRef.current) window.clearInterval(timerRef.current);
       if (recorderRef.current) recorderRef.current.cancel();
@@ -204,8 +208,39 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   };
 
   // Requirement 5: Speaker button strictly plays the Edo voice recording
-  const handlePlayWordAudio = async (e: React.MouseEvent, entry: EdoEntry) => {
+  const handlePlayWordAudio = async (e: React.SyntheticEvent, entry: EdoEntry) => {
     e.stopPropagation();
+    if (readOnly) {
+      const playback = childPlaybackRef.current;
+      const request = ++playback.request;
+      stopActivePlayback();
+      if (playback.entryId === entry.id) {
+        playback.entryId = null;
+        setPlayingId(null);
+        return;
+      }
+      playback.entryId = null;
+      setPlayingId(null);
+      if (!entry.hasAudio || !entry.cloudAudioFileId || entry.playbackPermission !== 'granted') return;
+      playback.entryId = entry.id;
+      setPlayingId(entry.id);
+      const finish = () => {
+        if (playback.request === request) {
+          playback.entryId = null;
+          setPlayingId(null);
+        }
+      };
+      try {
+        const audioUrl = await getChildrenAudio(entry);
+        // A different card, Stop, or unmount supersedes an outstanding cloud read.
+        if (playback.request !== request) return;
+        if (!audioUrl) { finish(); return; }
+        playAudioRecording(audioUrl, entry.audioDurationSec || 3,
+          (_sec, playing) => { if (!playing) finish(); },
+          { allowDemoFallback: false, onError: finish });
+      } catch { finish(); }
+      return;
+    }
     if (!entry.hasAudio) return;
 
     if (entry.playbackPermission === 'denied') {
@@ -251,7 +286,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     if (entry.cloudAudioFileId) {
       setPlayingId(entry.id);
       try {
-        const audioUrl = await (readOnly ? getChildrenAudio(entry) : getCommunityAudio(entry));
+        const audioUrl = await getCommunityAudio(entry);
         if (!audioUrl) {
           setPlayingId(null);
           return;
@@ -565,7 +600,16 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           return (
             <div
               key={entry.id}
-              onClick={() => { if (!isLocked) handleOpenEntry(entry); }}
+              role={readOnly ? 'button' : undefined}
+              tabIndex={readOnly ? 0 : undefined}
+              aria-label={readOnly ? `${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${entry.english}` : undefined}
+              aria-pressed={readOnly ? isPlayingThis : undefined}
+              onClick={(event) => { if (readOnly) void handlePlayWordAudio(event, entry); else if (!isLocked) handleOpenEntry(entry); }}
+              onKeyDown={readOnly ? (event) => {
+                if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+                event.preventDefault();
+                if (!event.repeat) void handlePlayWordAudio(event, entry);
+              } : undefined}
               className="w-full h-[96px] rounded-2xl bg-white hover:bg-[#FCF9F2] border border-[#E6DFCF] px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition"
             >
               <div className="flex flex-1 items-center gap-3 min-w-0">
@@ -606,10 +650,10 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
               {/* Action Buttons: Speaker (Listen) and Pencil (Edit) */}
               <div className="flex items-center gap-2 shrink-0">
                 {/* Speaker Button — Strictly plays recorded Edo human voice */}
-                <button
-                  type="button"
+                <SpeakerControl
+                  type={readOnly ? undefined : 'button'}
                   onClick={(e) => handlePlayWordAudio(e, entry)}
-                  aria-label={`${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${entry.english}`}
+                  aria-label={readOnly ? undefined : `${isPlayingThis ? 'Stop' : 'Play'} recorded Edo pronunciation for ${entry.english}`}
                   title={isPlaybackDenied ? 'Playback restricted (tap pencil to renew or replace voice)' : undefined}
                   className={`w-10 h-10 rounded-full flex items-center justify-center transition shrink-0 ${
                     isPlayingThis
@@ -620,7 +664,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   }`}
                 >
                   <Volume2 className="w-4 h-4 stroke-[2.3]" />
-                </button>
+                </SpeakerControl>
 
                 {/* Edit Button (Pencil) — ONLY this opens the editing window */}
                 {!readOnly && (!isLocked ? (

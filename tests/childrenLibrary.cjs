@@ -128,3 +128,130 @@ const lifecycleBundle = buildSync({
   assert.equal(periodic, undefined);
   console.log('PASS: opening, reconnect, visibility/focus and 30-second active refresh; hidden/offline suppression; snapshot replacement; listener cleanup.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
+
+// Run the real click/key handlers and existing audio player with controlled cloud replies.
+(async () => {
+  const slots = [];
+  let cursor = 0;
+  const effects = [];
+  const pending = [];
+  const audio = [];
+  const hooks = {
+    ...React,
+    useState(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = typeof initial === 'function' ? initial() : initial;
+      return [slots[index], value => { slots[index] = typeof value === 'function' ? value(slots[index]) : value; }];
+    },
+    useRef(initial) {
+      const index = cursor++;
+      if (!(index in slots)) slots[index] = { current: initial };
+      return slots[index];
+    },
+    useEffect(effect) { effects.push(effect); }
+  };
+  class TestAudio {
+    constructor() { this.paused = true; audio.push(this); }
+    play() { this.paused = false; return Promise.resolve(); }
+    pause() { this.paused = true; }
+  }
+  const mod = { exports: {} };
+  vm.runInNewContext(bundle, {
+    module: mod, exports: mod.exports, console, setTimeout, clearTimeout, AbortController,
+    Audio: TestAudio, localStorage: storage,
+    window: { setInterval: () => 1, clearInterval() {}, speechSynthesis: { cancel() {} } },
+    require: name => name === 'react' ? hooks : name.startsWith('@capacitor/') ? {} : require(name),
+    fetch: (url, options) => new Promise(resolve => {
+      assert.equal(JSON.parse(options.body).action, 'stream_audio');
+      pending.push({ resolve, options });
+    })
+  });
+  const entries = [lesson, { ...lesson, id: 'cloud-second', english: 'Eye', cloudAudioFileId: 'second' }];
+  const walk = node => !node || typeof node !== 'object' ? [] : [node, ...React.Children.toArray(node.props?.children).flatMap(walk)];
+  function render(readOnly = true) {
+    cursor = 0;
+    return walk(mod.exports.LanguageLibraryScreen({ entries, readOnly, onBackToDashboard() {} }));
+  }
+  const cards = () => render().filter(node => node.props.role === 'button');
+  const event = (extra = {}) => ({ stopped: false, stopPropagation() { this.stopped = true; }, preventDefault() { this.prevented = true; }, ...extra });
+  async function reply(index, success = true) {
+    pending[index].resolve({ ok: true, json: async () => success ? { status: 'success', audioDataUrl: 'data:audio/wav;base64,AAAA' } : { status: 'error' } });
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  // A click from any descendant (picture, English, Edo) bubbles to exactly one card handler.
+  for (const target of ['picture', 'English', 'Edo', 'empty card area']) {
+    const before = pending.length;
+    cards()[0].props.onClick(event({ target }));
+    assert.equal(pending.length, before + 1);
+    await reply(before);
+    assert.equal(audio.filter(item => !item.paused).length, 1);
+    cards()[0].props.onClick(event()); // Same card toggles Stop.
+    assert.equal(audio.filter(item => !item.paused).length, 0);
+  }
+  // The speaker stops propagation, so its parent does not also trigger playback.
+  const card = cards()[0];
+  const speaker = walk(card).find(node => node.type === 'span' && node.props.onClick);
+  const click = event();
+  const beforeSpeaker = pending.length;
+  const speakerResult = speaker.props.onClick(click);
+  if (!click.stopped) card.props.onClick(click);
+  assert.equal(pending.length, beforeSpeaker + 1);
+  await reply(beforeSpeaker);
+  await speakerResult;
+  assert.equal(audio.filter(item => !item.paused).length, 1);
+  // Switching cards stops immediately, and the new recording owns the feedback.
+  cards()[1].props.onClick(event());
+  assert.equal(audio.filter(item => !item.paused).length, 0);
+  await reply(pending.length - 1);
+  assert.equal(audio.filter(item => !item.paused).length, 1);
+  assert.equal(cards()[1].props['aria-pressed'], true);
+  cards()[1].props.onClick(event());
+  // Reverse the cloud response order; the superseded request must never play.
+  cards()[0].props.onClick(event());
+  const first = pending.length - 1;
+  cards()[1].props.onClick(event());
+  const second = pending.length - 1;
+  await reply(second);
+  const plays = audio.length;
+  await reply(first);
+  assert.equal(audio.length, plays);
+  assert.equal(audio.filter(item => !item.paused).length, 1);
+  cards()[1].props.onClick(event());
+  // Enter and Space each activate once, held keys do not retrigger, arrows retain scrolling.
+  for (const key of ['Enter', ' ']) {
+    const current = cards()[0];
+    const keyEvent = event({ key, target: current, currentTarget: current, repeat: false });
+    const before = pending.length;
+    current.props.onKeyDown(keyEvent);
+    assert(keyEvent.prevented);
+    assert.equal(pending.length, before + 1);
+    current.props.onKeyDown(event({ key, target: current, currentTarget: current, repeat: true }));
+    assert.equal(pending.length, before + 1);
+    await reply(before);
+    cards()[0].props.onClick(event());
+  }
+  const current = cards()[0];
+  const arrow = event({ key: 'ArrowDown', target: current, currentTarget: current });
+  current.props.onKeyDown(arrow);
+  assert.equal(arrow.prevented, undefined);
+  // Denial/unavailable responses never start the player.
+  const beforeDenied = audio.length;
+  current.props.onClick(event());
+  await reply(pending.length - 1, false);
+  assert.equal(audio.length, beforeDenied);
+  assert.equal(cards()[0].props['aria-pressed'], false);
+  // Leaving the screen invalidates a pending response.
+  cards()[0].props.onClick(event());
+  const beforeUnmount = audio.length;
+  effects[0]()();
+  await reply(pending.length - 1);
+  assert.equal(audio.length, beforeUnmount);
+  // The adult card retains its edit action and no new keyboard/audio-card attributes.
+  const adultNodes = render(false);
+  const adultCard = adultNodes.find(node => node.type === 'div' && node.props.className?.includes('h-[96px]'));
+  assert.equal(adultCard.props.role, undefined);
+  assert.equal(adultCard.props.tabIndex, undefined);
+  assert.equal(adultCard.props.onKeyDown, undefined);
+  assert(adultNodes.some(node => node.type === 'button' && node.props['aria-label'] === 'Edit Water'));
+  console.log('PASS: whole-card and speaker activation once; keyboard Enter/Space; immediate stop/switch; stale cloud replies ignored; denied audio blocked; adult card unchanged.');
+})().catch(error => { console.error(error); process.exitCode = 1; });
