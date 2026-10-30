@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const React = require('react');
 const { renderToStaticMarkup } = require('react-dom/server');
 const bundle = buildSync({
-  stdin: { contents: `export * from './src/services/childrenLibraryService'; export { LanguageLibraryScreen } from './src/screens/LanguageLibraryScreen'; export { HelpOthersScreen } from './src/screens/HelpOthersScreen';`, resolveDir: process.cwd(), loader: 'ts' },
+  stdin: { contents: `export * from './src/services/childrenLibraryService'; export { LanguageLibraryScreen } from './src/screens/LanguageLibraryScreen'; export { HelpOthersScreen } from './src/screens/HelpOthersScreen'; export { clearSessionAudioCache } from './src/services/audioService';`, resolveDir: process.cwd(), loader: 'ts' },
   bundle: true, write: false, platform: 'node', format: 'cjs',
   define: { 'import.meta.env.BASE_URL': '"/Edo-Language-Studio/"' },
   external: ['react', 'react/jsx-runtime', '@capacitor/*']
@@ -36,6 +36,9 @@ const lesson = { id: 'cloud-real', recordingId: 'real', english: 'Water', edoTex
   assert.equal(await api.getChildrenAudio(lesson), response.audioDataUrl);
   assert.equal(calls[1].payload.action, 'stream_audio');
   assert.equal(calls[1].payload.authToken, undefined);
+  // Re-reading uses session cache without initiating another gateway call
+  assert.equal(await api.getChildrenAudio(lesson), response.audioDataUrl);
+  assert.equal(calls.length, 2, 'getChildrenAudio reuses session audio cache without duplicate network requests');
   await assert.rejects(api.getChildrenAudio({ ...lesson, playbackPermission: 'denied' }));
   assert.equal(calls.length, 2);
   response = { status: 'error' };
@@ -180,6 +183,7 @@ const lifecycleBundle = buildSync({
   }
   // A click from any descendant (picture, English, Edo) bubbles to exactly one card handler.
   for (const target of ['picture', 'English', 'Edo', 'empty card area']) {
+    mod.exports.clearSessionAudioCache?.();
     const before = pending.length;
     cards()[0].props.onClick(event({ target }));
     assert.equal(pending.length, before + 1);
@@ -189,6 +193,7 @@ const lifecycleBundle = buildSync({
     assert.equal(audio.filter(item => !item.paused).length, 0);
   }
   // The speaker stops propagation, so its parent does not also trigger playback.
+  mod.exports.clearSessionAudioCache?.();
   const card = cards()[0];
   const speaker = walk(card).find(node => node.type === 'span' && node.props.onClick);
   const click = event();
@@ -199,6 +204,15 @@ const lifecycleBundle = buildSync({
   await reply(beforeSpeaker);
   await speakerResult;
   assert.equal(audio.filter(item => !item.paused).length, 1);
+
+  // Once cached in session memory, repeated playback triggers immediately with zero extra network requests
+  const beforeCached = pending.length;
+  cards()[0].props.onClick(event()); // Stop current
+  cards()[0].props.onClick(event()); // Play again from session cache
+  assert.equal(pending.length, beforeCached, 'Second tap reuses session cache without any network request');
+  assert.equal(audio.filter(item => !item.paused).length, 1);
+  cards()[0].props.onClick(event()); // Stop
+  mod.exports.clearSessionAudioCache?.();
   // Switching cards stops immediately, and the new recording owns the feedback.
   cards()[1].props.onClick(event());
   assert.equal(audio.filter(item => !item.paused).length, 0);
@@ -207,6 +221,7 @@ const lifecycleBundle = buildSync({
   assert.equal(cards()[1].props['aria-pressed'], true);
   cards()[1].props.onClick(event());
   // Reverse the cloud response order; the superseded request must never play.
+  mod.exports.clearSessionAudioCache?.();
   cards()[0].props.onClick(event());
   const first = pending.length - 1;
   cards()[1].props.onClick(event());
@@ -219,6 +234,7 @@ const lifecycleBundle = buildSync({
   cards()[1].props.onClick(event());
   // Enter and Space each activate once, held keys do not retrigger, arrows retain scrolling.
   for (const key of ['Enter', ' ']) {
+    mod.exports.clearSessionAudioCache?.();
     const current = cards()[0];
     const keyEvent = event({ key, target: current, currentTarget: current, repeat: false });
     const before = pending.length;
@@ -235,12 +251,14 @@ const lifecycleBundle = buildSync({
   current.props.onKeyDown(arrow);
   assert.equal(arrow.prevented, undefined);
   // Denial/unavailable responses never start the player.
+  mod.exports.clearSessionAudioCache?.();
   const beforeDenied = audio.length;
   current.props.onClick(event());
   await reply(pending.length - 1, false);
   assert.equal(audio.length, beforeDenied);
   assert.equal(cards()[0].props['aria-pressed'], false);
   // Leaving the screen invalidates a pending response.
+  mod.exports.clearSessionAudioCache?.();
   cards()[0].props.onClick(event());
   const beforeUnmount = audio.length;
   effects[0]()();

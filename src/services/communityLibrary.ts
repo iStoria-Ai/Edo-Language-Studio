@@ -299,7 +299,7 @@ export async function getCommunityAudio(entry: EdoEntry): Promise<string> {
 
     const result = await streamAudioFromGateway(entry.cloudAudioFileId!);
     if (!result.ok || !result.audioDataUrl) throw new Error(result.error || 'Unable to play shared recording.');
-    await writeLibrarySnapshot(storageKey, result.audioDataUrl);
+    void writeLibrarySnapshot(storageKey, result.audioDataUrl).catch(() => {});
     if (entry.cloudMetadataFileId) {
       void recordPlaybackToGateway(entry.cloudMetadataFileId).catch(() => {});
     }

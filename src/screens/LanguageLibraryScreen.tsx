@@ -19,7 +19,7 @@ import { EdoEntry } from '../types/edo';
 import { StudioHeader } from '../components/StudioHeader';
 import { WordIllustration } from '../components/WordIllustration';
 import { EdoLetterBar } from '../components/EdoLetterBar';
-import { playAudioRecording, stopActivePlayback, MicrophoneRecorder, invalidateSessionAudio } from '../services/audioService';
+import { playAudioRecording, stopActivePlayback, MicrophoneRecorder, invalidateSessionAudio, createPrimedAudioElement, getCachedSessionAudio } from '../services/audioService';
 import {
   getCommunityAudio,
   updateOwnedRecordingPermissions,
@@ -104,6 +104,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<LibraryFilter>('all');
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [loadingAudioId, setLoadingAudioId] = useState<string | null>(null);
   const [selectedSnapshot, setSelectedEntry] = useState<EdoEntry | null>(null);
   const selectedEntry = selectedSnapshot ? entries.find(entry => entry.id === selectedSnapshot.id) || null : null;
 
@@ -286,37 +287,6 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
   // Requirement 5: Speaker button strictly plays the Edo voice recording
   const handlePlayWordAudio = async (e: React.SyntheticEvent, entry: EdoEntry) => {
     e.stopPropagation();
-    if (readOnly) {
-      const playback = childPlaybackRef.current;
-      const request = ++playback.request;
-      stopActivePlayback();
-      if (playback.entryId === entry.id) {
-        playback.entryId = null;
-        setPlayingId(null);
-        return;
-      }
-      playback.entryId = null;
-      setPlayingId(null);
-      if (!entry.hasAudio || !entry.cloudAudioFileId || entry.playbackPermission !== 'granted') return;
-      playback.entryId = entry.id;
-      setPlayingId(entry.id);
-      const finish = () => {
-        if (playback.request === request) {
-          playback.entryId = null;
-          setPlayingId(null);
-        }
-      };
-      try {
-        const audioUrl = await getChildrenAudio(entry);
-        // A different card, Stop, or unmount supersedes an outstanding cloud read.
-        if (playback.request !== request) return;
-        if (!audioUrl) { finish(); return; }
-        playAudioRecording(audioUrl, entry.audioDurationSec || 3,
-          (_sec, playing) => { if (!playing) finish(); },
-          { allowDemoFallback: false, onError: finish });
-      } catch { finish(); }
-      return;
-    }
     if (!entry.hasAudio) return;
 
     if (entry.playbackPermission === 'denied') {
@@ -324,70 +294,103 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       return;
     }
 
-    if (playingId === entry.id) {
+    const playback = childPlaybackRef.current;
+    const request = ++playback.request;
+
+    // Tapping on the currently playing or loading entry stops/cancels playback
+    if (playback.entryId === entry.id) {
+      playback.entryId = null;
       stopActivePlayback();
       setPlayingId(null);
+      setLoadingAudioId(null);
       return;
     }
 
-    const trackPlayback = () => {
-      if (!readOnly && entry.cloudMetadataFileId) {
-        void recordPlaybackToGateway(entry.cloudMetadataFileId).then(res => {
-          if (res.ok && (res.autoLocked || res.reviewStatus === 'approved_locked')) {
-            void onLibraryChanged?.();
-          }
-        }).catch(() => {});
+    // Stop active playback and register new active request
+    stopActivePlayback();
+    playback.entryId = entry.id;
+    setPlayingId(null);
+
+    const finish = () => {
+      if (playback.request === request) {
+        playback.entryId = null;
+        setPlayingId(null);
+        setLoadingAudioId(null);
       }
     };
 
-    // Case 1: Local recorded audio bytes are present
-    if (!entry.isCommunity && entry.audioDataUrl && typeof entry.audioDataUrl === 'string' && entry.audioDataUrl.startsWith('data:audio/')) {
+    // Synchronously prime an HTMLAudioElement inside the user tap event for Mobile Safari
+    const primedAudio = createPrimedAudioElement();
+
+    // Fast-path: Check if audio is already available in memory cache or local entry
+    const isDirectLocal = !entry.isCommunity && entry.audioDataUrl && entry.audioDataUrl.startsWith('data:audio/');
+    const cachedMemory = entry.cloudAudioFileId ? getCachedSessionAudio(entry.cloudAudioFileId) : null;
+    const immediateAudio = isDirectLocal ? entry.audioDataUrl : cachedMemory;
+
+    if (immediateAudio) {
+      setLoadingAudioId(null);
       setPlayingId(entry.id);
-      trackPlayback();
       playAudioRecording(
-        entry.audioDataUrl,
+        immediateAudio,
         entry.audioDurationSec || 3,
         (_sec, playing) => {
-          if (!playing) setPlayingId(null);
+          if (!playing) finish();
+          else if (playback.request === request) setPlayingId(entry.id);
         },
         {
           allowDemoFallback: false,
-          onError: () => setPlayingId(null)
+          primedAudio,
+          onError: finish
         }
       );
-      return;
-    }
-
-    // Case 2: Audio was uploaded & verified in Google Drive; stream real audio from gateway
-    if (entry.cloudAudioFileId) {
-      setPlayingId(entry.id);
-      try {
-        const audioUrl = await getCommunityAudio(entry);
-        if (!audioUrl) {
-          setPlayingId(null);
-          return;
-        }
-        trackPlayback();
-        playAudioRecording(
-          audioUrl,
-          entry.audioDurationSec || 3,
-          (_sec, playing) => {
-            if (!playing) setPlayingId(null);
-          },
-          {
-            allowDemoFallback: false,
-            onError: () => setPlayingId(null)
-          }
-        );
-      } catch (err) {
-        console.warn('Audio streaming failed:', err);
-        setPlayingId(null);
+      if (!readOnly && entry.cloudMetadataFileId) {
+        void recordPlaybackToGateway(entry.cloudMetadataFileId).catch(() => {});
       }
       return;
     }
 
-    // Case 3: No real recording exists; do NOT substitute synthetic speech or beep tones
-    setPlayingId(null);
+    // Audio must be downloaded: immediately provide visual Loading feedback on the first tap!
+    setLoadingAudioId(entry.id);
+
+    try {
+      const audioUrl = readOnly ? await getChildrenAudio(entry) : await getCommunityAudio(entry);
+      // If user tapped Stop, tapped another card, or unmounted while fetching, abort cleanly
+      if (playback.request !== request) {
+        if (primedAudio) {
+          try { primedAudio.pause(); } catch (_) {}
+        }
+        return;
+      }
+      if (!audioUrl) {
+        finish();
+        return;
+      }
+
+      setLoadingAudioId(null);
+      setPlayingId(entry.id);
+
+      playAudioRecording(
+        audioUrl,
+        entry.audioDurationSec || 3,
+        (_sec, playing) => {
+          if (!playing) finish();
+          else if (playback.request === request) setPlayingId(entry.id);
+        },
+        {
+          allowDemoFallback: false,
+          primedAudio,
+          onError: finish
+        }
+      );
+
+      if (!readOnly && entry.cloudMetadataFileId) {
+        void recordPlaybackToGateway(entry.cloudMetadataFileId).catch(() => {});
+      }
+    } catch (err) {
+      if (playback.request === request) {
+        finish();
+      }
+    }
   };
 
   // Play audio in modal
@@ -774,6 +777,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       <div ref={listRef} className="w-full px-5 pb-5 flex-1 overflow-y-auto space-y-2 min-h-0">
         {visibleEntries.map((entry) => {
           const isPlayingThis = playingId === entry.id;
+          const isLoadingThis = loadingAudioId === entry.id;
           const isLocked = entry.reviewStatus === 'approved_locked';
           const isPlaybackDenied = entry.playbackPermission === 'denied';
           const isVerifiedCloud = Boolean(
@@ -892,6 +896,8 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   className={`w-10 h-10 rounded-full flex items-center justify-center transition shrink-0 ${
                     isSaving
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed opacity-50'
+                      : isLoadingThis
+                      ? 'bg-[#E5F4EC] text-[#157A4C] border border-[#A7D7BC]'
                       : isPlayingThis
                       ? 'bg-[#157A4C] text-white scale-105 shadow-xs'
                       : isPlaybackDenied
@@ -899,7 +905,11 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                       : 'bg-[#E5F4EC] hover:bg-[#D2ECDF] text-[#157A4C]'
                   }`}
                 >
-                  <Volume2 className="w-4 h-4 stroke-[2.3]" />
+                  {isLoadingThis ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-[#157A4C]" />
+                  ) : (
+                    <Volume2 className="w-4 h-4 stroke-[2.3]" />
+                  )}
                 </SpeakerControl>
 
                 {/* Edit Button (Pencil) — ONLY this opens the editing window */}

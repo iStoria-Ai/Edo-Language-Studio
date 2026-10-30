@@ -1,5 +1,6 @@
 import { DEFAULT_GATEWAY_URL } from './cloudSyncService';
 import { EdoEntry } from '../types/edo';
+import { getCachedSessionAudio, setCachedSessionAudio, loadOrFetchAudio } from './audioService';
 
 // Intentionally stateless: never consult Studio credentials, caches, or upload queues.
 async function readGateway(payload: { action: 'get_library' } | { action: 'stream_audio'; fileId: string }, signal?: AbortSignal) {
@@ -38,11 +39,20 @@ export async function fetchChildrenLibrary(signal?: AbortSignal): Promise<{ entr
 
 export async function getChildrenAudio(entry: EdoEntry): Promise<string> {
   if (entry.playbackPermission !== 'granted' || !entry.cloudAudioFileId) throw new Error('Playback is not permitted.');
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-  try {
-    const data = await readGateway({ action: 'stream_audio', fileId: entry.cloudAudioFileId }, controller.signal);
-    if (typeof data.audioDataUrl !== 'string' || !data.audioDataUrl.startsWith('data:audio/')) throw new Error('Audio unavailable.');
-    return data.audioDataUrl;
-  } finally { clearTimeout(timeout); }
+
+  // 1. Check shared session audio cache first for instant repeat playback
+  const cached = getCachedSessionAudio(entry.cloudAudioFileId);
+  if (cached) return cached;
+
+  // 2. Fetch with in-flight deduplication so concurrent taps share a single download
+  return loadOrFetchAudio(entry.cloudAudioFileId, async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    try {
+      const data = await readGateway({ action: 'stream_audio', fileId: entry.cloudAudioFileId! }, controller.signal);
+      if (typeof data.audioDataUrl !== 'string' || !data.audioDataUrl.startsWith('data:audio/')) throw new Error('Audio unavailable.');
+      setCachedSessionAudio(entry.cloudAudioFileId!, data.audioDataUrl);
+      return data.audioDataUrl;
+    } finally { clearTimeout(timeout); }
+  });
 }

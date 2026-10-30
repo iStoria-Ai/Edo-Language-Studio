@@ -75,3 +75,4 @@ async function generateMissingAssets() {
 generateMissingAssets().then(() => {
   console.log('✓ All vocabulary images verified on disk.');
 });
+

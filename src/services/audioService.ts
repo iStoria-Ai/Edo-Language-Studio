@@ -1238,6 +1238,40 @@ export function stopActivePlayback(): void {
 export interface PlayAudioOptions {
   allowDemoFallback?: boolean;
   onError?: (message: string) => void;
+  primedAudio?: HTMLAudioElement | null;
+}
+
+// Silent 1-sample WAV data URI to prime Mobile Safari audio playback within a user interaction
+export const SILENT_AUDIO_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
+export function isSafariOrIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
+  const isSafari = /Safari/.test(ua) && !/Chrome/.test(ua) && !/Chromium/.test(ua) && !/Android/.test(ua);
+  return isIOS || isSafari;
+}
+
+/**
+ * Creates and unlocks an HTMLAudioElement synchronously within a user touch/click gesture.
+ * Mobile Safari expires user activation during asynchronous network downloads (e.g. from Google Drive),
+ * causing audio.play() to be blocked with NotAllowedError.
+ * Primes the media pipeline on iOS Safari so playback continues seamlessly once loaded.
+ */
+export function createPrimedAudioElement(): HTMLAudioElement | null {
+  try {
+    if (typeof Audio === 'undefined') return null;
+    if (!isSafariOrIOS()) return null;
+    const audio = new Audio();
+    audio.preload = 'auto';
+    audio.src = SILENT_AUDIO_WAV;
+    if (typeof audio.load === 'function') {
+      audio.load();
+    }
+    return audio;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1269,7 +1303,11 @@ export function playAudioRecording(
     playableUrl = playableUrl.replace('data:;base64,', 'data:audio/webm;base64,');
   }
 
-  const audio = new Audio();
+  const audio = options.primedAudio || new Audio();
+  try {
+    audio.pause();
+    audio.currentTime = 0;
+  } catch (_) {}
   audio.preload = 'auto';
   audio.src = playableUrl;
   activeAudioElement = audio;
