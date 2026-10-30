@@ -431,5 +431,133 @@ const shared = { id: 'cloud-rec-a', recordingId: 'rec-a', sourceLessonId: 'word-
     assert.equal(curatedQueue[firstNumIdx + 2].english, '4');
   }
 
+  // Test Background Audio Preloading, Green Dot Readiness, Zero-Latency Playback, Pause/Resume, and Invalidation
+  {
+    const preloaderBundle = buildSync({
+      entryPoints: ['src/services/audioPreloader.ts'],
+      bundle: true,
+      write: false,
+      platform: 'node',
+      format: 'cjs',
+      external: ['@capacitor/*']
+    }).outputFiles[0].text;
+
+    const testStorage = new Map();
+    let currentConcurrent = 0;
+    let peakConcurrent = 0;
+    let downloadsCount = 0;
+    const downloadResolvers = [];
+
+    const preloaderContext = {
+      module: { exports: {} },
+      console,
+      crypto: webcrypto,
+      TextEncoder,
+      Uint8Array,
+      AbortSignal,
+      atob,
+      btoa,
+      navigator: { onLine: true },
+      window: {
+        setTimeout: (fn, ms) => setTimeout(fn, ms),
+        clearTimeout: id => clearTimeout(id)
+      },
+      localStorage: {
+        getItem: key => testStorage.get(key) || null,
+        setItem: (key, val) => testStorage.set(key, val),
+        removeItem: key => testStorage.delete(key)
+      },
+      require: name => {
+        if (name === '@capacitor/core') return { Capacitor: { isNativePlatform: () => false } };
+        if (name === '@capacitor/preferences') return {
+          Preferences: {
+            get: async ({ key }) => ({ value: testStorage.get(key) || null }),
+            set: async ({ key, value }) => testStorage.set(key, value),
+            remove: async ({ key }) => { testStorage.delete(key); }
+          }
+        };
+        throw Error(name);
+      }
+    };
+    preloaderContext.exports = preloaderContext.module.exports;
+    vm.runInNewContext(preloaderBundle, preloaderContext);
+    const preloader = preloaderContext.module.exports;
+
+    preloader.clearAudioPreloadState();
+
+    const mockDownloader = async (fileId) => {
+      downloadsCount++;
+      currentConcurrent++;
+      if (currentConcurrent > peakConcurrent) peakConcurrent = currentConcurrent;
+      try {
+        if (fileId === 'audio-err') {
+          return { ok: false, error: 'Network error' };
+        }
+        return { ok: true, audioDataUrl: `data:audio/wav;base64,DATA_${fileId}` };
+      } finally {
+        currentConcurrent--;
+      }
+    };
+
+    const entriesToPreload = [
+      { id: 'cloud-1', english: 'Water', category: 'word', hasAudio: true, cloudAudioFileId: 'audio-1', playbackPermission: 'granted' },
+      { id: 'cloud-2', english: 'House', category: 'word', hasAudio: true, cloudAudioFileId: 'audio-2', playbackPermission: 'granted' },
+      { id: 'cloud-3', english: 'Tree', category: 'word', hasAudio: true, cloudAudioFileId: 'audio-3', playbackPermission: 'granted' },
+      { id: 'cloud-err', english: 'Faulty', category: 'word', hasAudio: true, cloudAudioFileId: 'audio-err', playbackPermission: 'granted' },
+      { id: 'cloud-denied', english: 'Private', category: 'word', hasAudio: true, cloudAudioFileId: 'audio-denied', playbackPermission: 'denied' }
+    ];
+
+    let notifyFired = 0;
+    const unsub = preloader.subscribeAudioReadiness(() => {
+      notifyFired++;
+    });
+
+    // Start background audio preloading
+    preloader.startBackgroundAudioLoading(entriesToPreload, mockDownloader);
+
+    // Denied entry must never be enqueued
+    assert.equal(preloader.isAudioDownloading('audio-denied'), false);
+    assert.equal(preloader.isAudioReady('audio-denied'), false);
+
+    // Wait for queue processing to complete
+    await new Promise(r => setTimeout(r, 600));
+
+    // Concurrency must never exceed 2 parallel downloads
+    assert(peakConcurrent <= 2, `Peak concurrent downloads (${peakConcurrent}) must not exceed 2`);
+
+    // Verify readiness: Successful downloads must be marked ready
+    assert.equal(preloader.isAudioReady('audio-1'), true, 'audio-1 must be marked ready for green dot');
+    assert.equal(preloader.isAudioReady('audio-2'), true, 'audio-2 must be marked ready for green dot');
+    assert.equal(preloader.isAudioReady('audio-3'), true, 'audio-3 must be marked ready for green dot');
+
+    // Failed download must NOT be marked ready (no green dot)
+    assert.equal(preloader.isAudioReady('audio-err'), false, 'Failed download must not show green dot');
+    assert.equal(preloader.isAudioFailed('audio-err'), true, 'audio-err must be recorded as failed');
+
+    // Listener notifications must have triggered as items became ready
+    assert(notifyFired > 0, 'Readiness listeners must be notified');
+
+    // Test pause during recording
+    preloader.pauseBackgroundAudioLoading();
+    // Enqueue an extra item while paused
+    const pausedItem = { id: 'cloud-pause', english: 'Paused', category: 'word', hasAudio: true, cloudAudioFileId: 'audio-pause', playbackPermission: 'granted' };
+    const beforeCount = downloadsCount;
+    preloader.startBackgroundAudioLoading([pausedItem], mockDownloader);
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(downloadsCount, beforeCount, 'Downloads must pause during microphone recording');
+
+    // Resume downloading
+    preloader.resumeBackgroundAudioLoading();
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(preloader.isAudioReady('audio-pause'), true, 'Resumed download must complete successfully');
+
+    // Test Invalidation on voice replacement or deletion
+    preloader.invalidateAudioPreload('audio-1');
+    assert.equal(preloader.isAudioReady('audio-1'), false, 'Invalidated audio must not show green dot');
+
+    unsub();
+    console.log('✓ Automatic background audio preloading, green dot readiness, and pause/resume verified.');
+  }
+
   console.log('PASS: shared/local deduplication, immutable originals, separate offline cache, durable spelling drafts, conflict preservation, permitted offline audio, revocation checks, multi-browser sync, admin locking, automatic section progression, tombstone purging, and synthetic test rejection.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -28,6 +28,12 @@ import {
   CloudEditDraft
 } from '../services/communityLibrary';
 import { adminLockEntry, adminUnlockEntry, adminDeleteEntry, adminSetApprovalCode, recordPlaybackToGateway } from '../services/cloudSyncService';
+import {
+  isAudioReady,
+  isAudioFailed,
+  subscribeAudioReadiness,
+  prioritizeAudioPreload
+} from '../services/audioPreloader';
 
 export interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
@@ -168,6 +174,14 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     };
   }, []);
 
+  // Re-render when background audio downloads complete or status changes
+  const [, setAudioTick] = useState(0);
+  useEffect(() => {
+    return subscribeAudioReadiness(() => {
+      setAudioTick((t) => t + 1);
+    });
+  }, []);
+
   useEffect(() => {
     if (transientFeedback) {
       if (feedbackTimerRef.current) window.clearTimeout(feedbackTimerRef.current);
@@ -262,6 +276,21 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     }
     return true;
   });
+
+  // Prioritize on-screen visible recordings in background preloader queue
+  const visibleFileIdsKey = visibleEntries
+    .map((e) => e.cloudAudioFileId || '')
+    .slice(0, 40)
+    .join(',');
+
+  useEffect(() => {
+    const visibleIds = visibleEntries
+      .map((e) => e.cloudAudioFileId)
+      .filter((id): id is string => Boolean(id));
+    if (visibleIds.length > 0) {
+      prioritizeAudioPreload(visibleIds);
+    }
+  }, [visibleFileIdsKey]);
 
   const handleRenewPermission = async () => {
     if (!selectedEntry || !selectedEntry.cloudMetadataFileId) return;
@@ -780,12 +809,11 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           const isLoadingThis = loadingAudioId === entry.id;
           const isLocked = entry.reviewStatus === 'approved_locked';
           const isPlaybackDenied = entry.playbackPermission === 'denied';
-          const isVerifiedCloud = Boolean(
-            entry.cloudMetadataFileId &&
-            entry.cloudAudioFileId &&
-            !isPlaybackDenied &&
-            (entry.syncStatus === 'synced_to_drive' || entry.isCommunity)
-          );
+          const hasCloudAudio = Boolean(entry.cloudAudioFileId);
+          const isDirectLocal = !entry.isCommunity && Boolean(entry.audioDataUrl && entry.audioDataUrl.startsWith('data:audio/'));
+          const isAudioReadyNow = !isPlaybackDenied && (isDirectLocal || (hasCloudAudio && isAudioReady(entry.cloudAudioFileId!)));
+          const isAudioFailedNow = hasCloudAudio && isAudioFailed(entry.cloudAudioFileId!);
+          const isAudioDownloadingNow = hasCloudAudio && !isPlaybackDenied && !isAudioReadyNow && !isAudioFailedNow;
 
           // Pending cloud edit state for this specific card
           const pendingEdit = entry.cloudMetadataFileId ? pendingEditsMap.get(entry.cloudMetadataFileId) : undefined;
@@ -856,13 +884,24 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                         Failed to sync
                       </span>
                     ) : isLocked ? (
-                      <span title="Approved & Protected" className="inline-flex items-center">
-                        <Lock className="w-3.5 h-3.5 text-[#157A4C] shrink-0" />
-                      </span>
+                      <>
+                        <span title="Approved & Protected" className="inline-flex items-center">
+                          <Lock className="w-3.5 h-3.5 text-[#157A4C] shrink-0" />
+                        </span>
+                        {isPlaybackDenied ? (
+                          <span className="inline-block w-2 h-2 rounded-full bg-[#EAB308] shrink-0" title="Playback permission restricted (Tap pencil to renew or replace voice)" />
+                        ) : isAudioReadyNow ? (
+                          <span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] shrink-0" title="Voice recording ready to play" />
+                        ) : isAudioDownloadingNow ? (
+                          <span className="inline-block w-2 h-2 rounded-full bg-[#94A3B8] animate-pulse shrink-0" title="Downloading voice recording in background…" />
+                        ) : null}
+                      </>
                     ) : isPlaybackDenied ? (
                       <span className="inline-block w-2 h-2 rounded-full bg-[#EAB308] shrink-0" title="Playback permission restricted (Tap pencil to renew or replace voice)" />
-                    ) : isVerifiedCloud ? (
-                      <span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] shrink-0" title="Verified online with cloud recording" />
+                    ) : isAudioReadyNow ? (
+                      <span className="inline-block w-2 h-2 rounded-full bg-[#16A34A] shrink-0" title="Voice recording ready to play" />
+                    ) : isAudioDownloadingNow ? (
+                      <span className="inline-block w-2 h-2 rounded-full bg-[#94A3B8] animate-pulse shrink-0" title="Downloading voice recording in background…" />
                     ) : null}
                   </p>
                 </div>

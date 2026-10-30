@@ -37,6 +37,18 @@ export async function fetchChildrenLibrary(signal?: AbortSignal): Promise<{ entr
   return { entries, checkedAt: String(data.checkedAt || new Date().toISOString()) };
 }
 
+export async function streamChildrenAudio(fileId: string): Promise<{ ok: boolean; audioDataUrl?: string; error?: string }> {
+  try {
+    const data = await readGateway({ action: 'stream_audio', fileId });
+    if (typeof data.audioDataUrl === 'string' && data.audioDataUrl.startsWith('data:audio/')) {
+      return { ok: true, audioDataUrl: data.audioDataUrl };
+    }
+    return { ok: false, error: 'Audio unavailable.' };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'Download failed.' };
+  }
+}
+
 export async function getChildrenAudio(entry: EdoEntry): Promise<string> {
   if (entry.playbackPermission !== 'granted' || !entry.cloudAudioFileId) throw new Error('Playback is not permitted.');
 

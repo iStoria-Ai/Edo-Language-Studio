@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { LanguageLibraryScreen } from './LanguageLibraryScreen';
-import { fetchChildrenLibrary } from '../services/childrenLibraryService';
+import { fetchChildrenLibrary, streamChildrenAudio } from '../services/childrenLibraryService';
+import { startBackgroundAudioLoading } from '../services/audioPreloader';
 import { EdoEntry } from '../types/edo';
 import { PhoneFrame } from '../components/PhoneFrame';
 
@@ -24,7 +25,12 @@ export const ChildrenLibraryScreen: React.FC = () => {
       const timeout = window.setTimeout(() => request?.abort(), 30000);
       try {
         const snapshot = await fetchChildrenLibrary(request.signal);
-        if (!disposed) { setEntries(snapshot.entries); setCheckedAt(snapshot.checkedAt); setError(''); }
+        if (!disposed) {
+          setEntries(snapshot.entries);
+          setCheckedAt(snapshot.checkedAt);
+          setError('');
+          startBackgroundAudioLoading(snapshot.entries, streamChildrenAudio, { persistToStorage: false });
+        }
       } catch {
         if (!disposed) setError('Unable to connect');
       } finally {

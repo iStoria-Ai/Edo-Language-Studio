@@ -99,8 +99,12 @@ const lifecycleBundle = buildSync({
     window: windowMock, document: documentMock, navigator: navigatorMock, localStorage: storage,
     require: name => name === 'react' ? hooks : name.startsWith('@capacitor/') ? {} : require(name),
     fetch: async (url, options) => {
+      const payload = JSON.parse(options.body);
+      if (payload.action === 'stream_audio') {
+        return { ok: true, json: async () => ({ status: 'success', audioDataUrl: 'data:audio/wav;base64,AAAA' }) };
+      }
       requests++;
-      assert.equal(JSON.parse(options.body).action, 'get_library');
+      assert.equal(payload.action, 'get_library');
       return { ok: true, json: async () => ({ status: 'success', items: requests === 1 ? [lesson] : [], checkedAt: 'now' }) };
     }
   });

@@ -801,6 +801,19 @@ export async function trimAudioSilence(
   }
 }
 
+let recordingStartHandler: (() => void) | null = null;
+let recordingStopHandler: (() => void) | null = null;
+let audioInvalidationHandler: ((key: string) => void) | null = null;
+
+export function setRecordingLifecycleHandlers(onStart: () => void, onStop: () => void): void {
+  recordingStartHandler = onStart;
+  recordingStopHandler = onStop;
+}
+
+export function setAudioInvalidationHandler(handler: (key: string) => void): void {
+  audioInvalidationHandler = handler;
+}
+
 export class MicrophoneRecorder {
   private mediaRecorder: MediaRecorder | null = null;
   private chunks: Blob[] = [];
@@ -916,6 +929,7 @@ export class MicrophoneRecorder {
       this.startTime = Date.now();
       // Start recording (250ms timeslice ensures periodic chunk collection across Chrome & iOS Safari)
       this.mediaRecorder.start(250);
+      recordingStartHandler?.();
 
       return { ok: true };
     } catch (err) {
@@ -1210,6 +1224,7 @@ export class MicrophoneRecorder {
       this.stream = null;
     }
     this.mediaRecorder = null;
+    recordingStopHandler?.();
   }
 }
 
@@ -1413,6 +1428,7 @@ export function invalidateSessionAudio(key: string): void {
   if (!key) return;
   sessionAudioCache.delete(key);
   inFlightAudioRequests.delete(key);
+  audioInvalidationHandler?.(key);
 }
 
 /**

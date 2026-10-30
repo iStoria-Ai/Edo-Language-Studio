@@ -46,6 +46,7 @@ import {
 } from './services/vocabularyService';
 import { fetchCommunityLibrary, queueCommunityEdit, syncCommunityEdits, ensureCommunityEditSynced, readCommunityCache, mergeCommunityEntries, getHelpOthersEligibleEntries, readSpellingDrafts, queueCommunitySpelling, syncSpellingDrafts, uploadWrittenContribution, CommunitySnapshot } from './services/communityLibrary';
 import { invalidateSessionAudio } from './services/audioService';
+import { startBackgroundAudioLoading } from './services/audioPreloader';
 import { LocalLibrary } from './services/libraryProtection';
 import { SCREEN_BADGE_MAP } from './components/ScreenBadgeHeader';
 import {
@@ -159,6 +160,13 @@ export const App: React.FC = () => {
     document.addEventListener('visibilitychange', refresh);
     return () => { window.clearInterval(timer); window.removeEventListener('online', refresh); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
   }, [isLoaded, activeSection]);
+
+  // Immediately download available permitted recordings quietly in background on app start
+  useEffect(() => {
+    if (sharedEntries && sharedEntries.length > 0) {
+      startBackgroundAudioLoading(sharedEntries);
+    }
+  }, [sharedEntries]);
 
   useEffect(() => {
     loadLibrary().then((loaded) => {
