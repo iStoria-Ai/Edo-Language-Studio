@@ -439,13 +439,21 @@ function notifyPendingEditsChanged(): void {
 }
 
 async function editCloudDrafts(action: (items: CloudEditDraft[]) => CloudEditDraft[]): Promise<void> {
-  const write = async () => {
+  const write = async (): Promise<void> => {
     const raw = await readLibrarySnapshot(EDIT_KEY);
     await writeLibrarySnapshot(EDIT_KEY, JSON.stringify(action(raw ? JSON.parse(raw) : [])));
     notifyPendingEditsChanged();
   };
-  const run = () => typeof navigator !== 'undefined' && navigator.locks ? navigator.locks.request(EDIT_KEY, write) : write();
-  const next = editTail.then(run, run); editTail = next.catch(() => undefined); await next;
+  const run = async (): Promise<void> => {
+    if (typeof navigator !== 'undefined' && 'locks' in navigator && navigator.locks) {
+      await navigator.locks.request(EDIT_KEY, write);
+    } else {
+      await write();
+    }
+  };
+  const next = editTail.then(run, run);
+  editTail = next.catch(() => undefined);
+  await next;
 }
 
 export async function readPendingCloudEdits(): Promise<CloudEditDraft[]> {

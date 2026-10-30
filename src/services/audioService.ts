@@ -766,7 +766,7 @@ export async function trimAudioSilence(
     }
 
     const wavBytes = encodeWavPcm16(trimmed.channels, audioBuffer.sampleRate);
-    const trimmedBlob = new Blob([wavBytes], { type: 'audio/wav' });
+    const trimmedBlob = new Blob([wavBytes.buffer as ArrayBuffer], { type: 'audio/wav' });
 
     console.log(
       `[AudioService] Automatically trimmed recording: original ${originalDur}s -> trimmed ${trimmed.durationSec}s (${(trimmed.channels[0].length / audioBuffer.sampleRate).toFixed(2)}s)`
