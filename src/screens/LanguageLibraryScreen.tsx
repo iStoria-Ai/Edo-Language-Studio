@@ -11,6 +11,7 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Loader2,
   RotateCcw
 } from 'lucide-react';
@@ -34,6 +35,11 @@ import {
   subscribeAudioReadiness,
   prioritizeAudioPreload
 } from '../services/audioPreloader';
+import {
+  enqueueImageDiscovery,
+  prioritizeImageDiscovery,
+  getVocabularyImageUrl
+} from '../services/imageService';
 
 export interface LanguageLibraryScreenProps {
   entries: EdoEntry[];
@@ -55,7 +61,55 @@ export interface LanguageLibraryScreenProps {
   onJumpToHelpOthers?: () => void;
 }
 
-type LibraryFilter = 'all' | 'words' | 'phrases';
+export type LibraryFilter =
+  | 'all'
+  | 'words'
+  | 'phrases'
+  | 'alphabet'
+  | 'numbers'
+  | 'body'
+  | 'food'
+  | 'animals'
+  | 'family'
+  | 'household'
+  | 'other';
+
+export const LIBRARY_TABS: { id: LibraryFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'words', label: 'Words' },
+  { id: 'phrases', label: 'Phrases' },
+  { id: 'alphabet', label: 'Alphabet' },
+  { id: 'numbers', label: 'Numbers' },
+  { id: 'body', label: 'Human Body' },
+  { id: 'food', label: 'Food' },
+  { id: 'animals', label: 'Animals' },
+  { id: 'family', label: 'Family' },
+  { id: 'household', label: 'Household' },
+  { id: 'other', label: 'Other' }
+];
+
+const animalsSet = new Set(['dog', 'cat', 'bird', 'goat', 'cow', 'horse', 'lion', 'elephant', 'monkey', 'duck', 'pig', 'rabbit', 'fish', 'snake', 'lizard', 'frog', 'chicken', 'sheep']);
+const familySet = new Set(['mother', 'nursing mother', 'father', 'baby', 'child', 'brother', 'sister', 'grandmother', 'grandfather', 'friend', 'family', 'parent', 'parents', 'wife', 'husband']);
+const bodySet = new Set(['hand', 'eye', 'head', 'ear', 'nose', 'mouth', 'foot', 'leg', 'arm', 'heart', 'face', 'tooth', 'teeth', 'hair', 'neck', 'belly', 'chest', 'knee', 'bone', 'skin', 'blood']);
+const foodSet = new Set(['food', 'water', 'rice', 'bread', 'meat', 'fish', 'soup', 'fruit', 'vegetables', 'yam', 'salt', 'oil', 'pepper', 'egg', 'banana', 'drink', 'eat', 'tea', 'corn', 'cassava']);
+const homeSet = new Set(['house', 'door', 'window', 'room', 'bed', 'chair', 'table', 'kitchen', 'roof', 'floor', 'key', 'lamp', 'cup', 'plate', 'pot', 'spoon', 'knife', 'broom', 'clock']);
+
+export function getEntryVocabularyCategory(entry: EdoEntry): string {
+  if (entry.topic) return entry.topic;
+  const english = (entry.english || '').trim();
+  const norm = english.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ');
+  const sing = norm.endsWith('s') && norm.length > 2 ? norm.slice(0, -1) : norm;
+  const id = (entry.sourceLessonId || entry.id || '').toLowerCase();
+
+  if (id.startsWith('letter-') || (english.length === 1 && /^[a-zA-Z]$/.test(english))) return 'Alphabet';
+  if (id.startsWith('number-') || /^\d+$/.test(english)) return 'Numbers';
+  if (animalsSet.has(norm) || animalsSet.has(sing) || id.startsWith('animal-')) return 'Animals';
+  if (familySet.has(norm) || familySet.has(sing) || id.startsWith('family-')) return 'Family';
+  if (bodySet.has(norm) || bodySet.has(sing) || id.startsWith('body-')) return 'Body';
+  if (foodSet.has(norm) || foodSet.has(sing) || id.startsWith('food-')) return 'Food';
+  if (homeSet.has(norm) || homeSet.has(sing) || id.startsWith('home-')) return 'Household';
+  return 'Other';
+}
 
 /**
  * Requirement: Library must contain only completed, verified lessons:
@@ -268,6 +322,19 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
     if (activeFilter === 'phrases' && entry.category !== 'phrase' && entry.category !== 'sentence') {
       return false;
     }
+    if (activeFilter === 'alphabet' && getEntryVocabularyCategory(entry) !== 'Alphabet') return false;
+    if (activeFilter === 'numbers' && getEntryVocabularyCategory(entry) !== 'Numbers') return false;
+    if (activeFilter === 'body' && getEntryVocabularyCategory(entry) !== 'Body') return false;
+    if (activeFilter === 'food' && getEntryVocabularyCategory(entry) !== 'Food') return false;
+    if (activeFilter === 'animals' && getEntryVocabularyCategory(entry) !== 'Animals') return false;
+    if (activeFilter === 'family' && getEntryVocabularyCategory(entry) !== 'Family') return false;
+    if (activeFilter === 'household' && getEntryVocabularyCategory(entry) !== 'Household') return false;
+    if (activeFilter === 'other') {
+      const cat = getEntryVocabularyCategory(entry);
+      if (['Alphabet', 'Numbers', 'Body', 'Food', 'Animals', 'Family', 'Household'].includes(cat)) {
+        return false;
+      }
+    }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       const matchEng = entry.english.toLowerCase().includes(q);
@@ -289,6 +356,19 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
       .filter((id): id is string => Boolean(id));
     if (visibleIds.length > 0) {
       prioritizeAudioPreload(visibleIds);
+    }
+  }, [visibleFileIdsKey]);
+
+  // Quietly discover and prioritize images for visible library entries
+  useEffect(() => {
+    const words = visibleEntries.map(e => e.english).filter(Boolean);
+    if (words.length > 0) {
+      prioritizeImageDiscovery(words);
+      for (const entry of visibleEntries) {
+        if (!getVocabularyImageUrl({ id: entry.sourceLessonId || entry.id, english: entry.english, imageUrl: entry.imageUrl })) {
+          enqueueImageDiscovery(entry.english, getEntryVocabularyCategory(entry), entry.sourceLessonId || entry.id);
+        }
+      }
     }
   }, [visibleFileIdsKey]);
 
@@ -763,31 +843,31 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
           )}
         </div>
 
-        {/* Filter Pills: All / Words / Phrases */}
-        <div className="flex items-center gap-2 mt-2 overflow-x-auto pb-0.5">
-          {(
-            [
-              { id: 'all', label: 'All' },
-              { id: 'words', label: 'Words' },
-              { id: 'phrases', label: 'Phrases' }
-            ] as { id: LibraryFilter; label: string }[]
-          ).map((tab) => {
-            const isActive = activeFilter === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveFilter(tab.id)}
-                className={`px-3.5 py-1 rounded-full text-[13px] font-bold transition shrink-0 ${
-                  isActive
-                    ? 'bg-[#157A4C] text-white shadow-xs'
-                    : 'bg-white border border-[#DFD7C5] text-[#333F36] hover:bg-[#F3EDE0]'
-                }`}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
+        {/* Category Tabs: Horizontally scrollable on mobile */}
+        <div className="relative mt-2">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none pr-7">
+            {LIBRARY_TABS.map((tab) => {
+              const isActive = activeFilter === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveFilter(tab.id)}
+                  className={`px-3.5 py-1.5 rounded-full text-[13px] font-bold transition shrink-0 ${
+                    isActive
+                      ? 'bg-[#157A4C] text-white shadow-xs'
+                      : 'bg-white border border-[#DFD7C5] text-[#333F36] hover:bg-[#F3EDE0]'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+          {/* Subtle scroll hint chevron on right edge */}
+          <div className="absolute right-0 top-0 bottom-1 flex items-center pointer-events-none pl-3 bg-gradient-to-l from-[#FAF7F0] via-[#FAF7F0]/90 to-transparent">
+            <ChevronRight className="w-4 h-4 text-[#7C857E]" />
+          </div>
         </div>
       </div>
 
@@ -841,7 +921,7 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                 event.preventDefault();
                 if (!event.repeat) void handlePlayWordAudio(event, entry);
               } : undefined}
-              className={`w-full h-[96px] rounded-2xl border px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-xs transition ${
+              className={`w-full h-[96px] rounded-2xl border px-2.5 py-2 flex items-center justify-between gap-2.5 sm:gap-3.5 shadow-xs transition ${
                 isSaving
                   ? 'bg-[#F9FAFB] border-[#E5E7EB] opacity-60 cursor-not-allowed select-none'
                   : isSyncFailed
@@ -849,26 +929,29 @@ export const LanguageLibraryScreen: React.FC<LanguageLibraryScreenProps> = ({
                   : 'bg-white hover:bg-[#FCF9F2] border-[#E6DFCF]'
               }`}
             >
-              <div className="flex flex-1 items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center shrink-0">
+              <div className="flex flex-1 items-center gap-2.5 sm:gap-3.5 min-w-0 h-full">
+                {/* Large picture occupying almost the full height of the card with small margin */}
+                <div className="w-[110px] sm:w-[124px] h-[80px] rounded-xl overflow-hidden flex items-center justify-center shrink-0 bg-[#F4EFE6] border border-[#E2D8C6] shadow-2xs">
                   <WordIllustration
                     id={entry.sourceLessonId || entry.id}
                     english={displayEnglish}
                     illustrationKey={entry.illustrationKey}
                     imageUrl={entry.imageUrl}
                     skipLocalCache={readOnly}
-                    size="sm"
+                    size="card"
+                    allowOnlineDiscovery
                   />
                 </div>
 
-                <div className="min-w-0 flex-1 max-h-[74px] overflow-y-auto pr-1">
-                  {/* Line 1: English (Full text visible, wraps cleanly) */}
-                  <p className="text-[13px] leading-snug font-semibold text-[#1A241D] break-words whitespace-normal select-text">
-                    <span className="text-[#68766E] font-medium text-[13px]">English:</span> {displayEnglish}
+                {/* English & Edo text moved slightly toward middle */}
+                <div className="min-w-0 flex-1 max-h-[80px] overflow-y-auto pr-1 flex flex-col justify-center select-text">
+                  {/* Line 1: English */}
+                  <p className="text-[13px] sm:text-[14px] leading-snug text-[#1A241D] break-words whitespace-normal">
+                    <span className="text-[#68766E] font-medium text-[13px]">English:</span> <span className="font-bold text-[#1A241D]">{displayEnglish}</span>
                   </p>
 
                   {/* Line 2: Edo (Full spelling visible, with small status dot, saving spinner, or lock) */}
-                  <p className="text-[13px] leading-snug text-[#157A4C] break-words whitespace-normal mt-0.5 flex items-center gap-1.5 flex-wrap select-text">
+                  <p className="text-[13px] sm:text-[14px] leading-snug text-[#157A4C] break-words whitespace-normal mt-1 flex items-center gap-1.5 flex-wrap">
                     <span className="text-[#68766E] font-medium text-[13px]">Edo:</span>
                     <span className="font-bold text-[#1F2922]">{displayEdo}</span>
                     {isSaving ? (

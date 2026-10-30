@@ -68,6 +68,57 @@ for (const item of vocab) {
   verifiedCount++;
 }
 
+// 6. Verify God, Nursing Mother, and plural/singular resolutions
+const EXTRA_CURATED = [
+  { english: 'God', filename: 'spiritual-god.jpg' },
+  { english: 'Nursing Mother', filename: 'family-nursing-mother.jpg' },
+  { english: 'Cup', filename: 'home-cup.jpg' }
+];
+
+for (const ex of EXTRA_CURATED) {
+  const filePath = path.join(VOCAB_DIR, ex.filename);
+  assert.ok(fs.existsSync(filePath), `Curated asset ${ex.filename} for "${ex.english}" must exist`);
+  const stat = fs.statSync(filePath);
+  assert.ok(stat.size > 2000, `Curated asset ${ex.filename} must be substantial (>2KB)`);
+  console.log(`✓ Confirmed curated image for ${ex.english}: ${ex.filename} (${Math.round(stat.size / 1024)} KB)`);
+}
+
+// 7. Verify category classification logic for Library tabs
+const { buildSync } = require('esbuild');
+const vm = require('node:vm');
+const libBundle = buildSync({
+  entryPoints: ['src/screens/LanguageLibraryScreen.tsx'],
+  bundle: true,
+  write: false,
+  platform: 'node',
+  format: 'cjs',
+  external: ['react', 'react/jsx-runtime', 'lucide-react', '@capacitor/*']
+}).outputFiles[0].text;
+
+const mod = { exports: {} };
+vm.runInNewContext(libBundle, {
+  module: mod,
+  exports: mod.exports,
+  console,
+  require: () => ({})
+});
+
+const { getEntryVocabularyCategory, LIBRARY_TABS } = mod.exports;
+assert.equal(LIBRARY_TABS.length, 11, 'Must have 11 category tabs');
+
+assert.equal(getEntryVocabularyCategory({ english: 'Dog', id: 'cloud-1', category: 'word' }), 'Animals');
+assert.equal(getEntryVocabularyCategory({ english: 'Birds', id: 'cloud-2', category: 'word' }), 'Animals');
+assert.equal(getEntryVocabularyCategory({ english: 'Nursing Mother', id: 'cloud-3', category: 'word' }), 'Family');
+assert.equal(getEntryVocabularyCategory({ english: 'Friend', id: 'cloud-4', category: 'word' }), 'Family');
+assert.equal(getEntryVocabularyCategory({ english: 'Head', id: 'cloud-5', category: 'word' }), 'Body');
+assert.equal(getEntryVocabularyCategory({ english: 'Water', id: 'cloud-6', category: 'word' }), 'Food');
+assert.equal(getEntryVocabularyCategory({ english: 'Cup', id: 'cloud-7', category: 'word' }), 'Household');
+assert.equal(getEntryVocabularyCategory({ english: 'A', id: 'letter-a', category: 'word' }), 'Alphabet');
+assert.equal(getEntryVocabularyCategory({ english: '1', id: 'number-1', category: 'word' }), 'Numbers');
+assert.equal(getEntryVocabularyCategory({ english: 'God', id: 'cloud-8', category: 'word' }), 'Other');
+
+console.log('✓ Confirmed category tab classification across Animals, Family, Body, Food, Household, Alphabet, Numbers, and Other.');
+
 console.log(`✓ All ${verifiedCount} starter asset files are present. File size does not verify the pictured subject.`);
 console.log('=== BUNDLED VOCABULARY ASSET PRESENCE TESTS PASSED (semantic checks are separate) ===\n');
 
